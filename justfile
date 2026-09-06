@@ -54,6 +54,21 @@ build:
 run:
     cargo run
 
+# Build an optimized binary at target/release/cmt
+[group('build')]
+release:
+    cargo build --release
+
+# Build and install cmt into cargo's bin directory ($CARGO_HOME/bin, ~/.cargo/bin by default)
+[group('build')]
+install:
+    cargo install --path . --locked
+
+# Remove the installed cmt binary from cargo's bin directory
+[group('build')]
+uninstall:
+    cargo uninstall cmt
+
 #
 # checks group recipes
 #
