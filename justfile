@@ -62,7 +62,7 @@ release:
 # Build and install cmt into cargo's bin directory ($CARGO_HOME/bin, ~/.cargo/bin by default)
 [group('build')]
 install:
-    cargo install --path . --locked
+    cargo +stable install --path . --locked
 
 # Remove the installed cmt binary from cargo's bin directory
 [group('build')]
