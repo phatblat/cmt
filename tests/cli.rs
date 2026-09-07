@@ -169,6 +169,27 @@ fn deps_group_needs_bumps_and_nothing_is_committed_without_it() {
 }
 
 #[test]
+fn deps_bumps_are_inferred_from_cargo_lock() {
+    let repo = Repo::seeded();
+    repo.write(
+        "Cargo.lock",
+        "[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n",
+    );
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "lock serde"]);
+    repo.write(
+        "Cargo.lock",
+        "[[package]]\nname = \"serde\"\nversion = \"1.0.1\"\n",
+    );
+    let out = repo.cmt(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        repo.last_body(),
+        "deps: update Cargo.lock\n\nBumps: serde 1.0.0 -> 1.0.1\n"
+    );
+}
+
+#[test]
 fn clean_tree_is_exit_3() {
     let repo = Repo::seeded();
     let out = repo.cmt(&[]);
@@ -194,11 +215,11 @@ fn type_override_makes_one_commit_with_provenance() {
 }
 
 #[test]
-fn mixed_set_with_intent_flag_needs_type() {
+fn single_mode_mixed_set_needs_type() {
     let repo = Repo::seeded();
     repo.write("src/lib.rs", "pub fn f() -> u8 { 1 }\n");
     repo.write("README.md", "# seed\n\nmore\n");
-    let out = repo.cmt(&["--subject", "x"]);
+    let out = repo.cmt(&["--single", "--subject", "x"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr(&out).contains("needs --type; inferred groups: refactor, docs"),
@@ -206,6 +227,33 @@ fn mixed_set_with_intent_flag_needs_type() {
         stderr(&out)
     );
     assert_eq!(repo.subjects(), "seed\n");
+}
+
+#[test]
+fn intent_targets_the_source_commit() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 1 }\n");
+    repo.write("README.md", "# seed\n\nmore\n");
+    let out = repo.cmt(&["--type", "feat", "--breaking", "--body", "why"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        repo.subjects(),
+        "seed\nfeat!: update src/lib.rs\ndocs: update README.md\n"
+    );
+    assert!(
+        repo.git(&["log", "-1", "--format=%B", "HEAD~1"])
+            .contains("why")
+    );
+}
+
+#[test]
+fn single_squashes_every_group() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 1 }\n");
+    repo.write("README.md", "# seed\n\nmore\n");
+    let out = repo.cmt(&["--single", "--type", "feat"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nfeat: update 2 files\n");
 }
 
 #[test]
@@ -229,4 +277,37 @@ fn pathspec_limits_the_selection_and_plan_precedes_source() {
         "seed\ndocs: update README.md\nplan: start 2026-09-06-x\nrefactor: update src/lib.rs\n"
     );
     assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn agent_prompt_prints_and_commits_nothing() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 1 }\n");
+    repo.write("README.md", "# seed\n\nmore\n");
+    let before = repo.head();
+    let out = repo.cmt(&["--agent-prompt"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("1. refactor: update src/lib.rs   [primary: intent undecided]"),
+        "{text}"
+    );
+    assert!(text.contains("## Staged diff"), "{text}");
+    assert!(text.contains("+pub fn f() -> u8 { 1 }"), "{text}");
+    assert!(text.contains("## Answer"), "{text}");
+    assert_eq!(repo.head(), before);
+    assert_eq!(repo.status(), "M  README.md\nM  src/lib.rs\n");
+}
+
+#[test]
+fn agent_prompt_conflicts_with_intent_flags() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 1 }\n");
+    let out = repo.cmt(&["--agent-prompt", "--type", "fix"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("cannot be used with"),
+        "{}",
+        stderr(&out)
+    );
 }

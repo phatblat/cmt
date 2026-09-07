@@ -1,3 +1,4 @@
+use crate::bumps;
 use crate::change::{Change, Status};
 use crate::message::CommitType;
 use crate::scope;
@@ -7,6 +8,7 @@ use crate::subject;
 pub enum Category {
     Todo,
     Plan,
+    Changelog,
     Decision,
     Ignore,
     Ci,
@@ -18,13 +20,34 @@ pub enum Category {
     Source,
 }
 
-const CI_FILES: [&str; 4] = [
+const CI_PREFIXES: [&str; 5] = [
+    ".github/workflows/",
+    ".github/actions/",
+    ".circleci/",
+    ".buildkite/",
+    ".woodpecker/",
+];
+const GITHUB_CI_FILES: [&str; 5] = [
+    ".github/dependabot.yml",
+    ".github/renovate.json",
+    ".github/renovate.json5",
+    ".github/labeler.yml",
+    ".github/release.yml",
+];
+const CI_FILES: [&str; 11] = [
     ".gitlab-ci.yml",
     ".travis.yml",
     "azure-pipelines.yml",
     "Jenkinsfile",
+    ".drone.yml",
+    "bitbucket-pipelines.yml",
+    "cloudbuild.yaml",
+    "codecov.yml",
+    ".codecov.yml",
+    "renovate.json",
+    "renovate.json5",
 ];
-const LOCKFILES: [&str; 9] = [
+const LOCKFILES: [&str; 20] = [
     "Cargo.lock",
     "package-lock.json",
     "bun.lock",
@@ -34,11 +57,50 @@ const LOCKFILES: [&str; 9] = [
     "uv.lock",
     "poetry.lock",
     "go.sum",
+    "Gemfile.lock",
+    "composer.lock",
+    "Package.resolved",
+    "Podfile.lock",
+    "Pipfile.lock",
+    "flake.lock",
+    "mix.lock",
+    "pubspec.lock",
+    "deno.lock",
+    "gradle.lockfile",
+    "go.work.sum",
 ];
-const MANIFESTS: [&str; 4] = ["Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
-const TEST_DIRS: [&str; 4] = ["tests", "test", "__tests__", "spec"];
+const MANIFESTS: [&str; 20] = [
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "go.mod",
+    "Gemfile",
+    "composer.json",
+    "Package.swift",
+    "Podfile",
+    "Pipfile",
+    "setup.py",
+    "setup.cfg",
+    "flake.nix",
+    "mix.exs",
+    "pubspec.yaml",
+    "deno.json",
+    "deno.jsonc",
+    "go.work",
+    "build.gradle",
+    "build.gradle.kts",
+    "pom.xml",
+];
+const TEST_DIRS: [&str; 6] = [
+    "tests",
+    "test",
+    "__tests__",
+    "spec",
+    "testdata",
+    "__snapshots__",
+];
 const DOC_EXTS: [&str; 4] = ["md", "mdx", "rst", "txt"];
-const BUILD_FILES: [&str; 11] = [
+const BUILD_FILES: [&str; 40] = [
     "mise.toml",
     ".tool-versions",
     "justfile",
@@ -48,13 +110,68 @@ const BUILD_FILES: [&str; 11] = [
     ".editorconfig",
     "rustfmt.toml",
     "clippy.toml",
-    "commitlint.config.js",
-    "commitlint.config.mjs",
+    "CMakeLists.txt",
+    "meson.build",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "gradle.properties",
+    "gradlew",
+    "gradlew.bat",
+    "Taskfile.yml",
+    "Taskfile.yaml",
+    ".pre-commit-config.yaml",
+    "deny.toml",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+    "biome.json",
+    "biome.jsonc",
+    ".nvmrc",
+    ".node-version",
+    ".python-version",
+    ".ruby-version",
+    "Brewfile",
+    "Brewfile.lock.json",
+    "mise.lock",
+    ".releaserc",
+    ".releaserc.json",
+    ".markdownlint.json",
+    ".markdownlint.yaml",
+    ".markdownlint-cli2.jsonc",
+    ".swiftlint.yml",
+    ".swiftformat",
+    "compose.yaml",
+    "compose.yml",
 ];
+const BUILD_PREFIXES: [&str; 16] = [
+    "Dockerfile",
+    "tsconfig",
+    ".prettierrc",
+    "commitlint.config.",
+    "eslint.config.",
+    ".eslintrc",
+    "vite.config.",
+    "vitest.config.",
+    "webpack.config.",
+    "rollup.config.",
+    "jest.config.",
+    "babel.config.",
+    ".babelrc",
+    "docker-compose.",
+    "lefthook.",
+    ".lefthook.",
+];
+const BUILD_DIRS: [&str; 6] = [".husky", ".cargo", ".vscode", ".idea", ".zed", "gradle"];
 
 /// First path component when the path has a directory part.
 fn first_dir(path: &str) -> Option<&str> {
     path.split_once('/').map(|(dir, _)| dir)
+}
+
+/// Every path component except the basename, in order.
+fn dirs(path: &str) -> impl Iterator<Item = &str> {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    parts.pop();
+    parts.into_iter()
 }
 
 fn basename(path: &str) -> &str {
@@ -100,32 +217,109 @@ pub fn find_decision_id(text: &str) -> Option<String> {
         })
 }
 
+/// The lifecycle state named by a decision's `## Status` line, per
+/// conventional-docs; also the verb of the `decision:` event it produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecisionStatus {
+    Draft,
+    Proposed,
+    Accepted,
+    Rejected,
+}
+
+impl DecisionStatus {
+    pub fn verb(self) -> &'static str {
+        match self {
+            DecisionStatus::Draft => "draft",
+            DecisionStatus::Proposed => "propose",
+            DecisionStatus::Accepted => "accept",
+            DecisionStatus::Rejected => "reject",
+        }
+    }
+}
+
+/// The state named by the single line under `## Status`, per conventional-docs.
+pub fn decision_status(text: &str) -> Option<DecisionStatus> {
+    let mut in_status = false;
+    for line in text.lines() {
+        if line.trim_end() == "## Status" {
+            in_status = true;
+            continue;
+        }
+        if !in_status {
+            continue;
+        }
+        if line.starts_with("## ") {
+            break;
+        }
+        if line.contains("**draft**") {
+            return Some(DecisionStatus::Draft);
+        }
+        if line.contains("**awaiting review**") {
+            return Some(DecisionStatus::Proposed);
+        }
+        if line.contains("**accepted**") {
+            return Some(DecisionStatus::Accepted);
+        }
+        if line.contains("**rejected**") {
+            return Some(DecisionStatus::Rejected);
+        }
+    }
+    None
+}
+
+/// Versions of `## [x.y.z]` headings in a Keep a Changelog file, in order;
+/// `[Unreleased]` (any case) is skipped.
+pub fn released_versions(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("## [")?;
+            let version = rest.split(']').next()?;
+            (!version.eq_ignore_ascii_case("unreleased")).then(|| version.to_string())
+        })
+        .collect()
+}
+
 fn is_test_name(base: &str) -> bool {
     let stem = base.rsplit_once('.').map(|(stem, _)| stem);
+    let ext = extension(base);
     stem.is_some_and(|s| s.ends_with("_test") || s.ends_with(".test") || s.ends_with(".spec"))
-        || (base.starts_with("test_") && extension(base) == "py")
+        || (base.starts_with("test_") && ext == "py")
         || base.ends_with("Tests.swift")
+        || base.ends_with("Test.java")
+        || base.ends_with("Test.kt")
+        || base.ends_with("Tests.cs")
+        || base.ends_with("_spec.rb")
+        || base == "conftest.py"
+        || base == "tests.rs"
+        || ext == "snap"
 }
 
 pub fn category(change: &Change) -> Category {
     let path = change.path.as_str();
     let base = basename(path);
     let ext = extension(base);
-    let dir = first_dir(path);
     if path == "TODO.md" {
         return Category::Todo;
     }
-    if path == "PLAN.md" && matches!(change.status, Status::Added | Status::Deleted) {
+    if path == "PLAN.md" {
         return Category::Plan;
     }
-    if change.status == Status::Added && decision_stem(path).is_some() {
+    if path == "CHANGELOG.md" {
+        return Category::Changelog;
+    }
+    if matches!(
+        change.status,
+        Status::Added | Status::Modified | Status::Renamed { .. }
+    ) && decision_stem(path).is_some()
+    {
         return Category::Decision;
     }
     if base.ends_with("ignore") || base == ".gitattributes" {
         return Category::Ignore;
     }
-    if path.starts_with(".github/workflows/")
-        || path.starts_with(".circleci/")
+    if CI_PREFIXES.iter().any(|p| path.starts_with(p))
+        || GITHUB_CI_FILES.contains(&path)
         || CI_FILES.contains(&base)
     {
         return Category::Ci;
@@ -133,23 +327,21 @@ pub fn category(change: &Change) -> Category {
     if LOCKFILES.contains(&base) {
         return Category::Lock;
     }
-    if MANIFESTS.contains(&base) {
+    if MANIFESTS.contains(&base) || (base.starts_with("requirements") && ext == "txt") {
         return Category::Manifest;
     }
-    if dir.is_some_and(|d| TEST_DIRS.contains(&d)) || is_test_name(base) {
+    if dirs(path).any(|d| TEST_DIRS.contains(&d)) || is_test_name(base) {
         return Category::Test;
     }
-    if dir == Some("docs") || DOC_EXTS.contains(&ext) {
-        return Category::Docs;
-    }
     if BUILD_FILES.contains(&base)
-        || base.starts_with("Dockerfile")
-        || base.starts_with("tsconfig")
-        || base.starts_with(".prettierrc")
+        || BUILD_PREFIXES.iter().any(|p| base.starts_with(p))
         || ext == "dockerfile"
-        || dir == Some(".husky")
+        || dirs(path).any(|d| BUILD_DIRS.contains(&d))
     {
         return Category::Build;
+    }
+    if first_dir(path) == Some("docs") || DOC_EXTS.contains(&ext) {
+        return Category::Docs;
     }
     Category::Source
 }
@@ -160,6 +352,11 @@ pub struct Group {
     pub scope: Option<String>,
     pub subject: String,
     pub changes: Vec<Change>,
+    /// true only for the refactor group built from `source` changes; the
+    /// commit intent flags retarget when more than one group is inferred.
+    pub source: bool,
+    /// `Bumps:` values inferred from a TOML lockfile diff; empty until wired.
+    pub bumps: Vec<String>,
 }
 
 impl Group {
@@ -173,6 +370,8 @@ impl Group {
             scope,
             subject,
             changes,
+            source: false,
+            bumps: Vec::new(),
         })
     }
 }
@@ -184,6 +383,7 @@ impl Group {
 pub fn group(changes: &[Change], read: &dyn Fn(&str) -> Option<String>) -> Vec<Group> {
     let mut decisions = Vec::new();
     let mut plans = Vec::new();
+    let mut changelog: Option<Change> = None;
     let mut ignore = Vec::new();
     let mut ci = Vec::new();
     let mut lock = Vec::new();
@@ -194,69 +394,188 @@ pub fn group(changes: &[Change], read: &dyn Fn(&str) -> Option<String>) -> Vec<G
     let mut source = Vec::new();
     let mut todo = Vec::new();
     for change in changes {
-        let bucket = match category(change) {
-            Category::Decision => &mut decisions,
-            Category::Plan => &mut plans,
-            Category::Ignore => &mut ignore,
-            Category::Ci => &mut ci,
-            Category::Lock => &mut lock,
-            Category::Manifest => &mut manifest,
-            Category::Test => &mut test,
-            Category::Docs => &mut docs,
-            Category::Build => &mut build,
-            Category::Source => &mut source,
-            Category::Todo => &mut todo,
-        };
-        bucket.push(change.clone());
+        match category(change) {
+            Category::Decision => decisions.push(change.clone()),
+            Category::Plan => plans.push(change.clone()),
+            Category::Changelog => changelog = Some(change.clone()),
+            Category::Ignore => ignore.push(change.clone()),
+            Category::Ci => ci.push(change.clone()),
+            Category::Lock => lock.push(change.clone()),
+            Category::Manifest => manifest.push(change.clone()),
+            Category::Test => test.push(change.clone()),
+            Category::Docs => docs.push(change.clone()),
+            Category::Build => build.push(change.clone()),
+            Category::Source => source.push(change.clone()),
+            Category::Todo => todo.push(change.clone()),
+        }
     }
 
     let mut groups = Vec::new();
     for change in decisions {
-        let stem = decision_stem(&change.path).expect("categorised as a decision");
-        groups.push(Group {
-            kind: CommitType::Decision,
-            scope: None,
-            subject: format!("propose {stem}"),
-            changes: vec![change],
-        });
+        let stem = decision_stem(&change.path)
+            .expect("categorised as a decision")
+            .to_string();
+        match change.status {
+            Status::Modified => {
+                let before = read(&format!("HEAD:{}", change.path))
+                    .as_deref()
+                    .and_then(decision_status);
+                let after = read(&format!(":{}", change.path))
+                    .as_deref()
+                    .and_then(decision_status);
+                match after {
+                    Some(after) if Some(after) != before => {
+                        groups.push(Group {
+                            kind: CommitType::Decision,
+                            scope: None,
+                            subject: format!("{} {stem}", after.verb()),
+                            changes: vec![change],
+                            source: false,
+                            bumps: Vec::new(),
+                        });
+                    }
+                    _ => docs.push(change),
+                }
+            }
+            _ => {
+                let verb = read(&format!(":{}", change.path))
+                    .as_deref()
+                    .and_then(decision_status)
+                    .map_or("propose", DecisionStatus::verb);
+                groups.push(Group {
+                    kind: CommitType::Decision,
+                    scope: None,
+                    subject: format!("{verb} {stem}"),
+                    changes: vec![change],
+                    source: false,
+                    bumps: Vec::new(),
+                });
+            }
+        }
     }
     for change in plans {
-        let (verb, spec) = if change.status == Status::Added {
-            ("start", ":PLAN.md")
-        } else {
-            ("done", "HEAD:PLAN.md")
-        };
-        let subject = match read(spec).and_then(|text| find_decision_id(&text)) {
-            Some(id) => format!("{verb} {id}"),
-            None => verb.to_string(),
-        };
-        groups.push(Group {
-            kind: CommitType::Plan,
-            scope: None,
-            subject,
-            changes: vec![change],
-        });
+        match change.status {
+            Status::Modified => {
+                groups.push(Group {
+                    kind: CommitType::Docs,
+                    scope: None,
+                    subject: "update PLAN.md".into(),
+                    changes: vec![change],
+                    source: false,
+                    bumps: Vec::new(),
+                });
+            }
+            Status::Deleted => {
+                let subject = match read("HEAD:PLAN.md").and_then(|text| find_decision_id(&text)) {
+                    Some(id) => format!("done {id}"),
+                    None => "done".to_string(),
+                };
+                groups.push(Group {
+                    kind: CommitType::Plan,
+                    scope: None,
+                    subject,
+                    changes: vec![change],
+                    source: false,
+                    bumps: Vec::new(),
+                });
+            }
+            _ => {
+                let subject = match read(":PLAN.md").and_then(|text| find_decision_id(&text)) {
+                    Some(id) => format!("start {id}"),
+                    None => "start".to_string(),
+                };
+                groups.push(Group {
+                    kind: CommitType::Plan,
+                    scope: None,
+                    subject,
+                    changes: vec![change],
+                    source: false,
+                    bumps: Vec::new(),
+                });
+            }
+        }
     }
+
+    let mut release: Option<Group> = None;
+    if let Some(change) = changelog.clone()
+        && change.status == Status::Modified
+    {
+        let head_versions = read("HEAD:CHANGELOG.md")
+            .as_deref()
+            .map(released_versions)
+            .unwrap_or_default();
+        let index_versions = read(":CHANGELOG.md")
+            .as_deref()
+            .map(released_versions)
+            .unwrap_or_default();
+        if let Some(version) = index_versions.iter().find(|v| !head_versions.contains(v)) {
+            let mut release_changes = vec![change];
+            release_changes.append(&mut manifest);
+            release_changes.append(&mut lock);
+            release_changes.sort_by(|a, b| a.path.cmp(&b.path));
+            release = Some(Group {
+                kind: CommitType::Release,
+                scope: None,
+                subject: format!("v{}", version.trim_start_matches('v')),
+                changes: release_changes,
+                source: false,
+                bumps: Vec::new(),
+            });
+            changelog = None;
+        }
+    }
+
     groups.extend(Group::mechanical(CommitType::Ignore, None, ignore));
     if lock.is_empty() {
         build.append(&mut manifest);
         groups.extend(Group::mechanical(CommitType::Build, None, build));
     } else {
         groups.extend(Group::mechanical(CommitType::Build, None, build));
+        let mut bumps: Vec<String> = lock
+            .iter()
+            .filter(|c| {
+                c.status == Status::Modified && bumps::TOML_LOCKS.contains(&basename(&c.path))
+            })
+            .filter_map(|c| {
+                let before = read(&format!("HEAD:{}", c.path))?;
+                let after = read(&format!(":{}", c.path))?;
+                Some(bumps::bumps(&before, &after))
+            })
+            .flatten()
+            .collect();
+        bumps.sort();
+        bumps.dedup();
         lock.append(&mut manifest);
         lock.sort_by(|a, b| a.path.cmp(&b.path));
-        groups.extend(Group::mechanical(CommitType::Deps, None, lock));
+        if let Some(mut g) = Group::mechanical(CommitType::Deps, None, lock) {
+            g.bumps = bumps;
+            groups.push(g);
+        }
     }
     if source.is_empty() {
         groups.extend(Group::mechanical(CommitType::Test, None, test));
+        if let Some(change) = changelog.take() {
+            docs.push(change);
+        }
     } else {
         let source_paths: Vec<&str> = source.iter().map(|c| c.path.as_str()).collect();
         let scope = scope::scope(&source_paths);
         source.append(&mut test);
-        groups.extend(Group::mechanical(CommitType::Refactor, scope, source));
+        let mut g =
+            Group::mechanical(CommitType::Refactor, scope, source).expect("source is non-empty");
+        g.source = true;
+        if let Some(change) = changelog.take() {
+            if matches!(change.status, Status::Added | Status::Modified) {
+                g.changes.push(change);
+            } else {
+                docs.push(change);
+            }
+        }
+        groups.push(g);
     }
     groups.extend(Group::mechanical(CommitType::Docs, None, docs));
     groups.extend(Group::mechanical(CommitType::Ci, None, ci));
+    groups.extend(release);
     for change in todo {
         let subject = if change.status == Status::Deleted {
             "clear"
@@ -268,6 +587,8 @@ pub fn group(changes: &[Change], read: &dyn Fn(&str) -> Option<String>) -> Vec<G
             scope: None,
             subject: subject.into(),
             changes: vec![change],
+            source: false,
+            bumps: Vec::new(),
         });
     }
     groups
@@ -297,11 +618,12 @@ mod tests {
 
     #[test]
     fn category_per_cascade_row() {
-        let cases: [(&str, Status, Category); 30] = [
+        let cases: [(&str, Status, Category); 41] = [
             ("TODO.md", Status::Modified, Category::Todo),
             ("PLAN.md", Status::Added, Category::Plan),
             ("PLAN.md", Status::Deleted, Category::Plan),
-            ("PLAN.md", Status::Modified, Category::Docs),
+            ("PLAN.md", Status::Modified, Category::Plan),
+            ("CHANGELOG.md", Status::Modified, Category::Changelog),
             (
                 "docs/decisions/2026-09-06-x.md",
                 Status::Added,
@@ -310,6 +632,11 @@ mod tests {
             (
                 "docs/decisions/2026-09-06-x.md",
                 Status::Modified,
+                Category::Decision,
+            ),
+            (
+                "docs/decisions/2026-09-06-x.md",
+                Status::Deleted,
                 Category::Docs,
             ),
             ("docs/decisions/notes.md", Status::Added, Category::Docs),
@@ -317,13 +644,23 @@ mod tests {
             ("web/.dockerignore", Status::Modified, Category::Ignore),
             (".gitattributes", Status::Modified, Category::Ignore),
             (".github/workflows/ci.yml", Status::Added, Category::Ci),
+            (
+                ".github/actions/setup/action.yml",
+                Status::Added,
+                Category::Ci,
+            ),
             (".circleci/config.yml", Status::Added, Category::Ci),
             ("Jenkinsfile", Status::Added, Category::Ci),
             ("Cargo.lock", Status::Modified, Category::Lock),
             ("web/bun.lock", Status::Modified, Category::Lock),
+            ("Gemfile.lock", Status::Modified, Category::Lock),
             ("Cargo.toml", Status::Modified, Category::Manifest),
             ("web/package.json", Status::Modified, Category::Manifest),
+            ("requirements.txt", Status::Modified, Category::Manifest),
             ("tests/cli.rs", Status::Added, Category::Test),
+            ("crates/x/tests/a.rs", Status::Added, Category::Test),
+            ("src/__tests__/a.ts", Status::Added, Category::Test),
+            ("src/parser/tests.rs", Status::Added, Category::Test),
             ("src/foo_test.go", Status::Added, Category::Test),
             ("src/foo.test.ts", Status::Added, Category::Test),
             ("src/foo.spec.ts", Status::Added, Category::Test),
@@ -332,9 +669,12 @@ mod tests {
             ("docs/guide.md", Status::Modified, Category::Docs),
             ("README.md", Status::Modified, Category::Docs),
             ("notes.txt", Status::Modified, Category::Docs),
+            ("docs/Makefile", Status::Modified, Category::Build),
             ("justfile", Status::Modified, Category::Build),
+            ("CMakeLists.txt", Status::Modified, Category::Build),
             ("Dockerfile.ci", Status::Added, Category::Build),
             (".husky/pre-commit", Status::Added, Category::Build),
+            (".cargo/config.toml", Status::Added, Category::Build),
             ("src/main.rs", Status::Modified, Category::Source),
         ];
         for (path, status, expected) in cases {
@@ -436,5 +776,115 @@ mod tests {
         );
         assert_eq!(groups[0].kind, CommitType::Decision);
         assert_eq!(groups[0].subject, "propose 2026-09-06-split-it");
+    }
+
+    #[test]
+    fn plan_edit_is_its_own_docs_commit() {
+        let changes = [modified("PLAN.md"), modified("README.md")];
+        let groups = group(&changes, &none);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].kind, CommitType::Docs);
+        assert_eq!(groups[0].subject, "update PLAN.md");
+        assert_eq!(groups[1].kind, CommitType::Docs);
+        assert_eq!(groups[1].subject, "update README.md");
+    }
+
+    #[test]
+    fn decision_added_as_draft() {
+        let index = |spec: &str| {
+            assert_eq!(spec, ":docs/decisions/2026-09-06-x.md");
+            Some("## Status\n\nThis is a **draft**; not final.\n".to_string())
+        };
+        let groups = group(
+            &[with("docs/decisions/2026-09-06-x.md", Status::Added)],
+            &index,
+        );
+        assert_eq!(groups[0].kind, CommitType::Decision);
+        assert_eq!(groups[0].subject, "draft 2026-09-06-x");
+    }
+
+    #[test]
+    fn decision_status_transition_is_an_event() {
+        let read = |spec: &str| match spec {
+            "HEAD:docs/decisions/2026-09-06-x.md" => {
+                Some("## Status\n\n**awaiting review**\n".to_string())
+            }
+            ":docs/decisions/2026-09-06-x.md" => Some("## Status\n\n**accepted**\n".to_string()),
+            _ => None,
+        };
+        let groups = group(
+            &[with("docs/decisions/2026-09-06-x.md", Status::Modified)],
+            &read,
+        );
+        assert_eq!(groups[0].kind, CommitType::Decision);
+        assert_eq!(groups[0].subject, "accept 2026-09-06-x");
+    }
+
+    #[test]
+    fn decision_edit_without_transition_is_docs() {
+        let read = |spec: &str| match spec {
+            "HEAD:docs/decisions/2026-09-06-x.md" | ":docs/decisions/2026-09-06-x.md" => {
+                Some("## Status\n\n**accepted**\n".to_string())
+            }
+            _ => None,
+        };
+        let groups = group(
+            &[with("docs/decisions/2026-09-06-x.md", Status::Modified)],
+            &read,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, CommitType::Docs);
+    }
+
+    #[test]
+    fn release_heading_cuts_a_release() {
+        let read = |spec: &str| match spec {
+            "HEAD:CHANGELOG.md" => Some("## [Unreleased]\n".to_string()),
+            ":CHANGELOG.md" => Some("## [Unreleased]\n\n## [0.2.0] - 2026-09-07\n".to_string()),
+            _ => None,
+        };
+        let changes = [
+            with("CHANGELOG.md", Status::Modified),
+            modified("Cargo.toml"),
+            modified("Cargo.lock"),
+        ];
+        let groups = group(&changes, &read);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, CommitType::Release);
+        assert_eq!(groups[0].subject, "v0.2.0");
+        assert_eq!(groups[0].changes.len(), 3);
+    }
+
+    #[test]
+    fn bumps_are_inferred_from_toml_lock() {
+        let read = |spec: &str| match spec {
+            "HEAD:Cargo.lock" => {
+                Some("[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n".to_string())
+            }
+            ":Cargo.lock" => {
+                Some("[[package]]\nname = \"serde\"\nversion = \"1.0.1\"\n".to_string())
+            }
+            _ => None,
+        };
+        let groups = group(&[with("Cargo.lock", Status::Modified)], &read);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, CommitType::Deps);
+        assert_eq!(groups[0].bumps, vec!["serde 1.0.0 -> 1.0.1"]);
+    }
+    #[test]
+    fn changelog_rides_with_source() {
+        let changes = [modified("src/a.rs"), modified("CHANGELOG.md")];
+        let groups = group(&changes, &none);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, CommitType::Refactor);
+        assert_eq!(groups[0].subject, "update src/a.rs");
+        assert!(groups[0].changes.iter().any(|c| c.path == "CHANGELOG.md"));
+    }
+
+    #[test]
+    fn changelog_alone_is_docs() {
+        let groups = group(&[modified("CHANGELOG.md")], &none);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, CommitType::Docs);
     }
 }

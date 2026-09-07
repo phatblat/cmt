@@ -100,6 +100,18 @@ pub fn staged_changes(pathspecs: &[String]) -> Result<Vec<Change>, String> {
     Ok(changes)
 }
 
+/// `git diff --cached [-- <pathspecs>]`: the staged patch, as text.
+pub fn diff(pathspecs: &[String]) -> Result<String, String> {
+    let out = run(
+        &with_pathspecs(
+            &["diff", "--cached", "--no-color", "--no-ext-diff", "-M"],
+            pathspecs,
+        ),
+        None,
+    )?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
 /// `git show <spec>`; `None` when the object does not exist (unborn HEAD,
 /// missing path). `spec` is `HEAD:<path>` or `:<path>` (the index).
 pub fn show(spec: &str) -> Option<String> {

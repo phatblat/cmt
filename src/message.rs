@@ -157,7 +157,7 @@ impl Message {
             CommitType::Security if self.advisory.is_empty() => {
                 return Err("`security` requires --advisory <id>".into());
             }
-            CommitType::Perf if self.body.is_none() => {
+            CommitType::Perf if !self.body.as_deref().is_some_and(has_measurement) => {
                 return Err("`perf` requires --body with a before/after measurement".into());
             }
             CommitType::Security => {}
@@ -165,6 +165,12 @@ impl Message {
                 return Err("--advisory is only valid with --type security".into());
             }
             _ => {}
+        }
+        if self.subject.is_empty() {
+            return Err("subject is empty".into());
+        }
+        if self.subject.ends_with('.') {
+            return Err("subject must not end with a period".into());
         }
         if self
             .assisted_by
@@ -189,6 +195,52 @@ impl Message {
     }
 }
 
+/// Mirrors commitlint's
+/// `/\d+\s*(ms|s|us|µs|ns|%|x|×|MB|GB|KB|ops\/s|req\/s)\b/i`: a digit run,
+/// optional whitespace, then one of these units at a JS `\b` boundary.
+fn has_measurement(body: &str) -> bool {
+    const UNITS: [&str; 13] = [
+        "ops/s", "req/s", "ms", "us", "µs", "ns", "MB", "GB", "KB", "s", "%", "x", "×",
+    ];
+    let chars: Vec<char> = body.chars().collect();
+    let n = chars.len();
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < n {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        while i < n && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let mut j = i;
+        while j < n && chars[j].is_whitespace() {
+            j += 1;
+        }
+        for unit in UNITS {
+            let ulen = unit.chars().count();
+            if j + ulen > n {
+                continue;
+            }
+            let candidate: String = chars[j..j + ulen].iter().collect();
+            if candidate.to_lowercase() != unit.to_lowercase() {
+                continue;
+            }
+            let last_is_word = is_word(unit.chars().next_back().expect("units are non-empty"));
+            let next = chars.get(j + ulen).copied();
+            let boundary_ok = if last_is_word {
+                next.is_none_or(|c| !is_word(c))
+            } else {
+                next.is_some_and(is_word)
+            };
+            if boundary_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
 /// `<model> <harness>/<version> mode=<suggested|supervised|autonomous>`
 fn assisted_by_is_valid(value: &str) -> bool {
     let mut parts = value.split(' ');
@@ -333,7 +385,25 @@ mod tests {
             m.validate(),
             Err("`perf` requires --body with a before/after measurement".into())
         );
+        m.body = Some("made it faster".into());
+        assert_eq!(
+            m.validate(),
+            Err("`perf` requires --body with a before/after measurement".into())
+        );
         m.body = Some("p50 12ms -> 3ms".into());
+        assert_eq!(m.validate(), Ok(()));
+    }
+
+    #[test]
+    fn subject_full_stop_and_empty_are_rejected() {
+        let mut m = Message::new(CommitType::Refactor, None, String::new());
+        assert_eq!(m.validate(), Err("subject is empty".into()));
+        m.subject = "update src/a.rs.".into();
+        assert_eq!(
+            m.validate(),
+            Err("subject must not end with a period".into())
+        );
+        m.subject = "update src/a.rs".into();
         assert_eq!(m.validate(), Ok(()));
     }
 

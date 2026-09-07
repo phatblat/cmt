@@ -1,7 +1,9 @@
+mod bumps;
 mod change;
 mod classify;
 mod git;
 mod message;
+mod prompt;
 mod scope;
 mod subject;
 
@@ -19,30 +21,60 @@ struct Cli {
     /// git pathspecs to stage and commit; default: everything dirty
     paths: Vec<String>,
 
-    /// commit type (feat, fix, perf, security, ... are never inferred)
-    #[arg(long = "type", help_heading = "Intent (switches to a single commit)")]
+    /// commit type; feat, fix, perf, security are never inferred
+    #[arg(
+        long = "type",
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     kind: Option<CommitType>,
     /// scope; "" removes the inferred one
-    #[arg(long, help_heading = "Intent (switches to a single commit)")]
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     scope: Option<String>,
     /// subject line
-    #[arg(long, help_heading = "Intent (switches to a single commit)")]
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     subject: Option<String>,
     /// body paragraph (required for perf)
-    #[arg(long, help_heading = "Intent (switches to a single commit)")]
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     body: Option<String>,
     /// append ! to the header
-    #[arg(long, help_heading = "Intent (switches to a single commit)")]
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     breaking: bool,
     /// Also: trailer, the type that lost the tiebreak
-    #[arg(long, help_heading = "Intent (switches to a single commit)")]
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     also: Option<CommitType>,
     /// Reverts: trailer
-    #[arg(long, help_heading = "Intent (switches to a single commit)")]
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     reverts: Option<String>,
     /// Advisory: trailer (repeatable; required for security)
-    #[arg(long, help_heading = "Intent (switches to a single commit)")]
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
     advisory: Vec<String>,
+    /// squash the whole selection into one commit
+    #[arg(
+        long,
+        help_heading = "Intent (targets the source commit, or the only commit)"
+    )]
+    single: bool,
 
     /// Bumps: trailer (repeatable; required for deps, attaches to the deps group)
     #[arg(long, help_heading = "Group-targeted")]
@@ -64,10 +96,20 @@ struct Cli {
     /// stage and print every message; commit nothing
     #[arg(long)]
     dry_run: bool,
+
+    /// print a prompt for an agent to decide intent with; stages, commits nothing
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "kind", "scope", "subject", "body", "breaking", "also", "reverts", "advisory",
+            "single", "dry_run",
+        ]
+    )]
+    agent_prompt: bool,
 }
 
 impl Cli {
-    fn single_intent(&self) -> bool {
+    fn has_intent(&self) -> bool {
         self.kind.is_some()
             || self.scope.is_some()
             || self.subject.is_some()
@@ -85,6 +127,24 @@ impl Cli {
         message.tested_by = self.tested_by.clone();
         message
     }
+}
+
+/// Applies every intent flag onto the primary commit's message.
+fn apply_intent(cli: &Cli, message: &mut Message) {
+    if let Some(kind) = cli.kind {
+        message.kind = kind;
+    }
+    if let Some(s) = &cli.scope {
+        message.scope = (!s.is_empty()).then(|| s.clone());
+    }
+    if let Some(s) = &cli.subject {
+        message.subject = s.clone();
+    }
+    message.breaking = cli.breaking;
+    message.body = cli.body.clone();
+    message.advisory = cli.advisory.clone();
+    message.reverts = cli.reverts.clone();
+    message.also = cli.also;
 }
 
 struct Failure {
@@ -108,6 +168,7 @@ impl Failure {
 struct Planned {
     message: Message,
     changes: Vec<Change>,
+    primary: bool,
 }
 
 fn main() {
@@ -131,11 +192,26 @@ fn execute(cli: &Cli) -> Result<(), Failure> {
         });
     }
     let groups = classify::group(&changes, &git::show);
-    let planned = if cli.single_intent() {
+    let planned = if cli.single {
         vec![single(cli, changes, &groups)?]
     } else {
         grouped(cli, groups)?
     };
+
+    if cli.agent_prompt {
+        let diff = git::diff(&cli.paths).map_err(Failure::git)?;
+        let drafts: Vec<prompt::Draft> = planned
+            .iter()
+            .map(|p| prompt::Draft {
+                message: &p.message,
+                changes: &p.changes,
+                primary: p.primary,
+                missing: p.message.validate().err(),
+            })
+            .collect();
+        print!("{}", prompt::render(&drafts, &diff, &cli.paths));
+        return Ok(());
+    }
 
     for p in &planned {
         p.message.validate().map_err(Failure::invalid)?;
@@ -168,16 +244,37 @@ fn grouped(cli: &Cli, groups: Vec<Group>) -> Result<Vec<Planned>, Failure> {
             "--bumps given but this change set has no deps group",
         ));
     }
+    let primary = groups
+        .iter()
+        .position(|g| g.source)
+        .or((groups.len() == 1).then_some(0));
+    if cli.has_intent() && primary.is_none() {
+        let kinds: Vec<&str> = groups.iter().map(|g| g.kind.as_str()).collect();
+        return Err(Failure::invalid(format!(
+            "intent flags need a source commit or a single commit; inferred groups: {}; pass --single to squash them",
+            kinds.join(", ")
+        )));
+    }
     Ok(groups
         .into_iter()
-        .map(|g| {
+        .enumerate()
+        .map(|(i, g)| {
             let mut message = Message::new(g.kind, g.scope, g.subject);
             if g.kind == CommitType::Deps {
-                message.bumps = cli.bumps.clone();
+                message.bumps = if cli.bumps.is_empty() {
+                    g.bumps.clone()
+                } else {
+                    cli.bumps.clone()
+                };
+            }
+            let is_primary = Some(i) == primary;
+            if is_primary {
+                apply_intent(cli, &mut message);
             }
             Planned {
                 message: cli.with_provenance(message),
                 changes: g.changes,
+                primary: is_primary,
             }
         })
         .collect())
@@ -213,14 +310,15 @@ fn single(cli: &Cli, changes: Vec<Change>, groups: &[Group]) -> Result<Planned, 
         (None, None) => subject::subject(&changes),
     };
     let mut message = Message::new(kind, scope, subject);
-    message.breaking = cli.breaking;
-    message.body = cli.body.clone();
-    message.bumps = cli.bumps.clone();
-    message.advisory = cli.advisory.clone();
-    message.reverts = cli.reverts.clone();
-    message.also = cli.also;
+    message.bumps = if cli.bumps.is_empty() {
+        groups.iter().flat_map(|g| g.bumps.clone()).collect()
+    } else {
+        cli.bumps.clone()
+    };
+    apply_intent(cli, &mut message);
     Ok(Planned {
         message: cli.with_provenance(message),
         changes,
+        primary: true,
     })
 }
