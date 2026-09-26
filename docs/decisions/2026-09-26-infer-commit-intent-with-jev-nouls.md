@@ -16,7 +16,7 @@ probabilities rather than prose. That is the shape of the missing judgment.
 
 ## Status
 
-This is a proposal that is **awaiting review**.
+This is a proposal that is **accepted**.
 
 ## Assumptions and Constraints
 
