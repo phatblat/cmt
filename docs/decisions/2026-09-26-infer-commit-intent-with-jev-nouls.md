@@ -100,9 +100,10 @@ requirements — stays in code, where it is testable without a network.
    `diff` is `git diff --cached` restricted to that group's paths. Lockfiles,
    docs, CI, and build changes are excluded: their types are already settled,
    and they act as distractors.
-9. A `state` estimated over 24,000 tokens is a refusal with exit `4`, not a
-   truncation. Silently trimming a diff changes the answer invisibly, which
-   contradicts clause 5.
+9. `state` size is estimated as its serialized byte length divided by four. An
+   estimate over 24,000 tokens is a refusal with exit `4`, not a truncation.
+   Silently trimming a diff changes the answer invisibly, which contradicts
+   clause 5.
 10. Seven Nouls are sent in one request. The ids are contract:
     `named_vulnerability`, `observable_delta`, `adds_capability`,
     `contradicted_stated_contract`, `test_expectation_changed`,
@@ -112,7 +113,8 @@ requirements — stays in code, where it is testable without a network.
     `measured_resource_change`.
 12. `test_expectation_changed` is omitted from the request when no test file is
     present in the source group. Whether a test file moved is something
-    `classify::category` already knows.
+    `classify::category` already knows. A predicate omitted from the request is
+    read as false by the cascade, never as ambiguous.
 
 ### Resolution
 
@@ -134,7 +136,7 @@ requirements — stays in code, where it is testable without a network.
     band refuses with exit `4` — but only when the cascade actually branched on
     that predicate. A predicate the cascade never reached cannot cause a
     refusal.
-15. The band is a named const in `intent.rs`, chosen from the eval in clause 20
+15. The band is a named const in `intent.rs`, chosen from the sweep in clause 25
     rather than by feel.
 16. Trailer requirements are not re-implemented. A jev-chosen `security`
     without `--advisory` fails the existing `Message::validate()` and exits `2`.
@@ -167,8 +169,9 @@ requirements — stays in code, where it is testable without a network.
     never ships them.
 24. A live run writes each raw jev response to `evals/recordings/<name>.json`.
     Replay mode scores the corpus from those recordings with no network, so a
-    cascade change is gated offline. `just check` runs replay; `just eval-live`
-    calls jev and rewrites the recordings.
+    cascade change is gated offline. Three recipes: `just eval` replays,
+    `just eval-live` calls jev and rewrites the recordings, and `just harvest`
+    proposes fixture candidates. `just check` depends on `just eval`.
 25. The report scores jev and the mechanical classifier against the same labels,
     reporting accuracy, coverage, per-predicate error counts, a dead-band sweep,
     and token usage. The mechanical classifier is the always-`refactor`
