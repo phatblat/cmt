@@ -1,0 +1,5 @@
+expected = "refactor"
+rationale = "Moves mod declarations from main.rs into a new lib.rs; no behavior changes, purely an internal reorganisation."
+body = ""
+files = ["src/lib.rs","src/main.rs"]
+diff = "diff --git a/src/lib.rs b/src/lib.rs\nnew file mode 100644\nindex 0000000..edf51e2\n--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,8 @@\n+pub mod bumps;\n+pub mod change;\n+pub mod classify;\n+pub mod git;\n+pub mod message;\n+pub mod prompt;\n+pub mod scope;\n+pub mod subject;\ndiff --git a/src/main.rs b/src/main.rs\nindex 377e08b..f25ab52 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,17 +1,12 @@\n-mod bumps;\n-mod change;\n-mod classify;\n-mod git;\n-mod message;\n-mod prompt;\n-mod scope;\n-mod subject;\n-\n use clap::Parser;\n \n-use change::Change;\n-use classify::Group;\n-use message::{CommitType, Message};\n+use cmt::change::Change;\n+use cmt::classify::{self, Group};\n+use cmt::git;\n+use cmt::message::{CommitType, Message};\n+use cmt::prompt;\n+use cmt::scope;\n+use cmt::subject;\n \n /// Commit dirty files as one agent-commits conventional commit per logical\n /// group, inferred from the paths.\n"
