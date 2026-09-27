@@ -29,6 +29,9 @@ Provenance — applied to every commit:
   --tested-by <NAME>     Tested-by: trailer (repeatable)
 
   --dry-run              stage and print every message; commit nothing
+
+  -h, --help             print help
+  -V, --version          print version
 ```
 
 Exit codes:
