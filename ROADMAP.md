@@ -9,6 +9,11 @@ applies.
 - [ ] Infer `Bumps:` from JSON and YAML lockfiles (`package-lock.json`,
       `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`); today only TOML
       `[[package]]` lockfiles (`Cargo.lock`, `uv.lock`, `poetry.lock`) are read.
+- [ ] Exclude the root package from `Bumps:` inference. `bumps::packages` reads
+      every `[[package]]` table in a TOML lockfile, so bumping the crate's own
+      version emits `Bumps: <crate> <from> -> <to>` on its release commit.
+      `Bumps:` records moves in the resolved dependency graph, and a crate is
+      not one of its own dependencies.
 - [ ] Run Rule F mechanically: apply only the staged test files to the parent
       commit in a temporary worktree and run them; red means `fix`, green means
       `refactor`. It is the one judgment the convention defines as an
