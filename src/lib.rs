@@ -2,6 +2,7 @@ pub mod bumps;
 pub mod change;
 pub mod classify;
 pub mod git;
+pub mod jev;
 pub mod message;
 pub mod prompt;
 pub mod scope;
