@@ -85,9 +85,9 @@ format-check:
 lint:
     cargo clippy --all-targets -- -D warnings
 
-# Run every gate: formatting, lint, tests
+# Run every gate: formatting, lint, tests, eval replay
 [group('checks')]
-check: format-check lint test
+check: format-check lint test eval
 
 #
 # tests group recipes
@@ -97,3 +97,27 @@ check: format-check lint test
 [group('tests')]
 test:
     cargo test
+
+#
+# eval group recipes
+#
+
+# Score the cascade against recorded jev responses; no network
+[group('eval')]
+eval:
+    cargo run --quiet --example eval
+
+# Call jev, rewrite the recordings, then score; needs TYPESAFE_API_KEY
+[group('eval')]
+eval-live:
+    cargo run --quiet --example eval -- --live
+
+# Replay and overwrite evals/baseline.toml with the current result
+[group('eval')]
+eval-bless:
+    cargo run --quiet --example eval -- --bless
+
+# Propose unlabelled fixture candidates from a repository's history
+[group('eval')]
+harvest repo="." count="20":
+    cargo run --quiet --example harvest -- {{ repo }} {{ count }}
