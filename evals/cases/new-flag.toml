@@ -1,0 +1,5 @@
+expected = "feat"
+rationale = "Adds --tested-by, a trailer a user could not emit before."
+body = ""
+files = ["src/main.rs", "src/message.rs"]
+diff = "@@ -90,6 +90,9 @@ struct Cli {\n+    /// Tested-by: trailer (repeatable)\n+    #[arg(long)]\n+    tested_by: Vec<String>,\n"
