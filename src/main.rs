@@ -1,17 +1,12 @@
-mod bumps;
-mod change;
-mod classify;
-mod git;
-mod message;
-mod prompt;
-mod scope;
-mod subject;
-
 use clap::Parser;
 
-use change::Change;
-use classify::Group;
-use message::{CommitType, Message};
+use cmt::change::Change;
+use cmt::classify::{self, Group};
+use cmt::git;
+use cmt::message::{CommitType, Message};
+use cmt::prompt;
+use cmt::scope;
+use cmt::subject;
 
 /// Commit dirty files as one agent-commits conventional commit per logical
 /// group, inferred from the paths.
