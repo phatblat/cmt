@@ -71,8 +71,18 @@ Top-down, first match wins.
 | 7 | manifest | `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod` |
 | 8 | test | under `tests/`, `test/`, `__tests__/`, `spec/`; `*_test.*`, `*.test.*`, `*.spec.*`, `test_*.py`, `*Tests.swift` |
 | 9 | docs | under `docs/`; `.md`, `.mdx`, `.rst`, `.txt` |
-| 10 | build | `mise.toml`, `.tool-versions`, `justfile`, `Makefile`, `build.rs`, `.editorconfig`, `rustfmt.toml`, `clippy.toml`, `commitlint.config.*`, `Dockerfile*`, `*.dockerfile`, `tsconfig*`, `.prettierrc*`, `.husky/` |
+| 10 | build | every mise config path (`mise.toml`, `mise/config.toml`, `.config/mise/conf.d/*.toml`, ... — see below), `.tool-versions`, `justfile`, `Makefile`, `build.rs`, `.editorconfig`, `rustfmt.toml`, `clippy.toml`, `commitlint.config.*`, `Dockerfile*`, `*.dockerfile`, `tsconfig*`, `.prettierrc*`, `.husky/` |
 | 11 | source | anything else |
+
+mise config paths are recognised at any depth, following
+[mise's own precedence](https://mise.jdx.dev/configuration.html#mise-toml):
+`mise.toml`, `.mise.toml`, either `.local`, or an environment variant like
+`mise.development.toml`; the grouped forms `mise/config.toml`, `.mise/config.toml`,
+`.config/mise.toml`, and `.config/mise/config.toml` (with their own `.local` and
+environment variants); the `.config/mise/mise.toml` / `mise.local.toml` legacy
+aliases; and `conf.d` fragments — any `.toml` directly inside `mise/conf.d/`,
+`.mise/conf.d/`, or `.config/mise/conf.d/`, or a `<folder>/mise.toml` inside one
+(folders are not searched recursively).
 
 ### How groups become commits
 
