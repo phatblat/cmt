@@ -198,7 +198,7 @@ impl Message {
 /// Mirrors commitlint's
 /// `/\d+\s*(ms|s|us|µs|ns|%|x|×|MB|GB|KB|ops\/s|req\/s)\b/i`: a digit run,
 /// optional whitespace, then one of these units at a JS `\b` boundary.
-fn has_measurement(body: &str) -> bool {
+pub fn has_measurement(body: &str) -> bool {
     const UNITS: [&str; 13] = [
         "ops/s", "req/s", "ms", "us", "µs", "ns", "MB", "GB", "KB", "s", "%", "x", "×",
     ];
