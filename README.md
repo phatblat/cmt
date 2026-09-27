@@ -1,9 +1,8 @@
 # cmt
 
-Deterministically commits dirty files as one agent-commits conventional commit
-per logical group, inferred from the paths. With `--jev`, the source commit's
-type is instead decided by TypeSafe's jev model; that path is opt-in and is not
-deterministic.
+Commits changes to git automatically.
+With `--jev`, the source commit's type is instead decided by
+TypeSafe's jev model.
 
 ## Usage
 
@@ -36,6 +35,10 @@ Provenance — applied to every commit:
                          needs TYPESAFE_API_KEY. Conflicts with --type,
                          --also, --breaking, --single, --agent-prompt
 
+  --agent-prompt         print a drafted-commit prompt for an agent to answer;
+                         commits nothing. Conflicts with --type, --also,
+                         --breaking, --single, --jev
+
   -h, --help             print help
   -V, --version          print version
 ```
@@ -60,19 +63,19 @@ commit over the whole selection.
 
 Top-down, first match wins.
 
-| # | Category | Predicate |
-|---|---|---|
-| 1 | todo | path is `TODO.md` |
-| 2 | plan | path is `PLAN.md` and it was added or deleted |
-| 3 | decision | added `docs/decisions/YYYY-MM-DD-slug.md` |
-| 4 | ignore | basename ends with `ignore`, or is `.gitattributes` |
-| 5 | ci | under `.github/workflows/` or `.circleci/`; `.gitlab-ci.yml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile` |
-| 6 | lock | `Cargo.lock`, `package-lock.json`, `bun.lock`, `bun.lockb`, `yarn.lock`, `pnpm-lock.yaml`, `uv.lock`, `poetry.lock`, `go.sum` |
-| 7 | manifest | `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod` |
-| 8 | test | under `tests/`, `test/`, `__tests__/`, `spec/`; `*_test.*`, `*.test.*`, `*.spec.*`, `test_*.py`, `*Tests.swift` |
-| 9 | docs | under `docs/`; `.md`, `.mdx`, `.rst`, `.txt` |
-| 10 | build | every mise config path (`mise.toml`, `mise/config.toml`, `.config/mise/conf.d/*.toml`, ... — see below), `.tool-versions`, `justfile`, `Makefile`, `build.rs`, `.editorconfig`, `rustfmt.toml`, `clippy.toml`, `commitlint.config.*`, `Dockerfile*`, `*.dockerfile`, `tsconfig*`, `.prettierrc*`, `.husky/` |
-| 11 | source | anything else |
+| #   | Category | Predicate                                                                                                                                                                                                                                                                                                   |
+| --- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | todo     | path is `TODO.md`                                                                                                                                                                                                                                                                                           |
+| 2   | plan     | path is `PLAN.md` and it was added or deleted                                                                                                                                                                                                                                                               |
+| 3   | decision | added `docs/decisions/YYYY-MM-DD-slug.md`                                                                                                                                                                                                                                                                   |
+| 4   | ignore   | basename ends with `ignore`, or is `.gitattributes`                                                                                                                                                                                                                                                         |
+| 5   | ci       | under `.github/workflows/` or `.circleci/`; `.gitlab-ci.yml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`                                                                                                                                                                                           |
+| 6   | lock     | `Cargo.lock`, `package-lock.json`, `bun.lock`, `bun.lockb`, `yarn.lock`, `pnpm-lock.yaml`, `uv.lock`, `poetry.lock`, `go.sum`                                                                                                                                                                               |
+| 7   | manifest | `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`                                                                                                                                                                                                                                                    |
+| 8   | test     | under `tests/`, `test/`, `__tests__/`, `spec/`; `*_test.*`, `*.test.*`, `*.spec.*`, `test_*.py`, `*Tests.swift`                                                                                                                                                                                             |
+| 9   | docs     | under `docs/`; `.md`, `.mdx`, `.rst`, `.txt`                                                                                                                                                                                                                                                                |
+| 10  | build    | every mise config path (`mise.toml`, `mise/config.toml`, `.config/mise/conf.d/*.toml`, ... — see below), `.tool-versions`, `justfile`, `Makefile`, `build.rs`, `.editorconfig`, `rustfmt.toml`, `clippy.toml`, `commitlint.config.*`, `Dockerfile*`, `*.dockerfile`, `tsconfig*`, `.prettierrc*`, `.husky/` |
+| 11  | source   | anything else                                                                                                                                                                                                                                                                                               |
 
 mise config paths are recognised at any depth, following
 [mise's own precedence](https://mise.jdx.dev/configuration.html#mise-toml):
@@ -88,18 +91,18 @@ aliases; and `conf.d` fragments — any `.toml` directly inside `mise/conf.d/`,
 
 One commit per group, in this order, so the tree builds after each one.
 
-| Order | Type | Members |
-|---|---|---|
-| 1 | `decision: propose <id>` | one commit per added decision record |
-| 2 | `plan: start <id>` / `plan: done <id>` | one commit per `PLAN.md` add/delete; `<id>` is the first decision link inside it |
-| 3 | `ignore` | every ignore path |
-| 4 | `build` | every build path, plus manifests when no lockfile moved |
-| 5 | `deps` | every lockfile, plus manifests, when a lockfile moved (needs `--bumps`) |
-| 6 | `refactor[(scope)]` | every source path, plus tests when source changed; scope is the shared directory under `src/`, `crates/`, ... |
-| 7 | `test` | every test path, when no source changed |
-| 8 | `docs` | every docs path |
-| 9 | `ci` | every ci path |
-| 10 | `todo: sync` / `todo: clear` | one commit per `TODO.md` change |
+| Order | Type                                   | Members                                                                                                       |
+| ----- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 1     | `decision: propose <id>`               | one commit per added decision record                                                                          |
+| 2     | `plan: start <id>` / `plan: done <id>` | one commit per `PLAN.md` add/delete; `<id>` is the first decision link inside it                              |
+| 3     | `ignore`                               | every ignore path                                                                                             |
+| 4     | `build`                                | every build path, plus manifests when no lockfile moved                                                       |
+| 5     | `deps`                                 | every lockfile, plus manifests, when a lockfile moved (needs `--bumps`)                                       |
+| 6     | `refactor[(scope)]`                    | every source path, plus tests when source changed; scope is the shared directory under `src/`, `crates/`, ... |
+| 7     | `test`                                 | every test path, when no source changed                                                                       |
+| 8     | `docs`                                 | every docs path                                                                                               |
+| 9     | `ci`                                   | every ci path                                                                                                 |
+| 10    | `todo: sync` / `todo: clear`           | one commit per `TODO.md` change                                                                               |
 
 Subjects are mechanical: `add|update|remove|rename <path>` for one file,
 `<verb> <N> files in <dir>` for several.
@@ -111,15 +114,15 @@ read. `--jev` sends the source group's diff to
 [jev](https://docs.typesafe.ai/) as seven yes/no questions in one request, then
 resolves the answers through a fixed cascade in `src/intent.rs`:
 
-| Order | Predicate | Type |
-|---|---|---|
-| 1 | `named_vulnerability` | `security` |
-| 2 | `observable_delta` and `contradicted_stated_contract` | `fix` (Rule N) |
-| 3 | `observable_delta` and `adds_capability` | `feat` (Rule N) |
-| 4 | `observable_delta` | `fix` |
-| 5 | `test_expectation_changed` | `fix` (Rule F) |
-| 6 | `measured_resource_change` and a number in `--body` | `perf` (Rule P) |
-| 7 | none of the above | `refactor` |
+| Order | Predicate                                             | Type            |
+| ----- | ----------------------------------------------------- | --------------- |
+| 1     | `named_vulnerability`                                 | `security`      |
+| 2     | `observable_delta` and `contradicted_stated_contract` | `fix` (Rule N)  |
+| 3     | `observable_delta` and `adds_capability`              | `feat` (Rule N) |
+| 4     | `observable_delta`                                    | `fix`           |
+| 5     | `test_expectation_changed`                            | `fix` (Rule F)  |
+| 6     | `measured_resource_change` and a number in `--body`   | `perf` (Rule P) |
+| 7     | none of the above                                     | `refactor`      |
 
 `consumer_must_change` appends `!`. The model answers only the seven questions;
 the ordering, Rule P's measurement check, and every trailer requirement stay in
