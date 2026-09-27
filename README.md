@@ -1,7 +1,9 @@
 # cmt
 
 Deterministically commits dirty files as one agent-commits conventional commit
-per logical group, inferred from the paths.
+per logical group, inferred from the paths. With `--jev`, the source commit's
+type is instead decided by TypeSafe's jev model; that path is opt-in and is not
+deterministic.
 
 ## Usage
 
@@ -30,6 +32,10 @@ Provenance — applied to every commit:
 
   --dry-run              stage and print every message; commit nothing
 
+  --jev                  ask jev to decide the source commit's intent;
+                         needs TYPESAFE_API_KEY. Conflicts with --type,
+                         --also, --breaking, --single, --agent-prompt
+
   -h, --help             print help
   -V, --version          print version
 ```
@@ -40,6 +46,8 @@ Exit codes:
 - `1` — git failure; earlier groups may already be committed
 - `2` — validation failed; nothing committed
 - `3` — nothing to commit
+- `4` — `--jev` could not decide: no key, no source commit, transport failure,
+  a diff over budget, or an answer too close to call. Nothing committed.
 
 Messages follow the [agent-commits](https://github.com/phatblat/agent-commits)
 convention plus the [conventional-docs](https://github.com/phatblat/conventional-docs)
@@ -86,11 +94,39 @@ One commit per group, in this order, so the tree builds after each one.
 Subjects are mechanical: `add|update|remove|rename <path>` for one file,
 `<verb> <N> files in <dir>` for several.
 
+### How `--jev` decides
+
+`feat`, `fix`, `perf`, and `security` describe intent, which a path scan cannot
+read. `--jev` sends the source group's diff to
+[jev](https://docs.typesafe.ai/) as seven yes/no questions in one request, then
+resolves the answers through a fixed cascade in `src/intent.rs`:
+
+| Order | Predicate | Type |
+|---|---|---|
+| 1 | `named_vulnerability` | `security` |
+| 2 | `observable_delta` and `contradicted_stated_contract` | `fix` (Rule N) |
+| 3 | `observable_delta` and `adds_capability` | `feat` (Rule N) |
+| 4 | `observable_delta` | `fix` |
+| 5 | `test_expectation_changed` | `fix` (Rule F) |
+| 6 | `measured_resource_change` and a number in `--body` | `perf` (Rule P) |
+| 7 | none of the above | `refactor` |
+
+`consumer_must_change` appends `!`. The model answers only the seven questions;
+the ordering, Rule P's measurement check, and every trailer requirement stay in
+code. An answer between 0.25 and 0.75 on a predicate the cascade reads is a
+refusal, not a guess. `TYPESAFE_ENDPOINT` overrides the API endpoint, for
+testing against a stub.
+
+`just eval` scores that cascade against a labelled corpus in `evals/`, offline,
+and runs as part of `just check`. `just eval-live` refreshes the recordings.
+
 ## Development
 
 ```bash
-just deps    # install pinned tools and dependencies
-just check   # formatting, lint, types, tests
+just deps     # install pinned tools and dependencies
+just check    # formatting, lint, types, tests
+just eval     # score the cascade against recorded jev responses, offline
+just harvest  # propose new fixture candidates from a repo's history
 ```
 
 `just --list` shows every recipe.
