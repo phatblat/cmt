@@ -1,6 +1,7 @@
 pub mod bumps;
 pub mod change;
 pub mod classify;
+pub mod eval;
 pub mod evalcase;
 pub mod git;
 pub mod intent;

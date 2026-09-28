@@ -3,118 +3,25 @@
 //! `just eval`       — replay from evals/recordings, compare to the baseline
 //! `just eval-live`  — call jev, rewrite the recordings, then score
 //! `just eval-bless` — replay and overwrite the baseline with the result
+//!
+//! The scoring logic (`score`, `tally`, the baseline-drift diff) lives in
+//! `cmt::eval`, where `cargo test` can reach it; this binary is the CLI and
+//! the live/bless side effects.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use cmt::eval::{self, Outcome};
 use cmt::evalcase::Case;
 use cmt::intent::{self, Answers, Band};
 use cmt::jev;
-use cmt::message::{self, CommitType};
-
-const CASES: &str = "evals/cases";
-const RECORDINGS: &str = "evals/recordings";
-const BASELINE: &str = "evals/baseline.toml";
-
-/// What one case resolved to, or why it did not.
-#[derive(Clone, Debug, PartialEq)]
-enum Outcome {
-    Decided {
-        kind: CommitType,
-        read: Vec<&'static str>,
-    },
-    Refused {
-        predicate: &'static str,
-    },
-    Unrecorded,
-}
-
-impl Outcome {
-    fn label(&self) -> String {
-        match self {
-            Outcome::Decided { kind, .. } => kind.as_str().to_string(),
-            Outcome::Refused { predicate } => format!("refused:{predicate}"),
-            Outcome::Unrecorded => "unrecorded".to_string(),
-        }
-    }
-}
-
-fn recording_path(name: &str) -> String {
-    format!("{RECORDINGS}/{name}.json")
-}
-
-/// The recorded answers for a case, plus the token count it cost, if a
-/// recording exists. A missing file is silently `None` (never ran
-/// `eval-live`); a present-but-unparseable file logs distinctly, so the
-/// report can tell the two apart.
-fn recording(name: &str) -> Option<(Answers, u64)> {
-    let raw = std::fs::read_to_string(recording_path(name)).ok()?;
-    let response: jev::Response = match serde_json::from_str(&raw) {
-        Ok(response) => response,
-        Err(e) => {
-            eprintln!("{name}: corrupt recording: {e}");
-            return None;
-        }
-    };
-    let tokens = response.usage.input_tokens;
-    let answers = response
-        .answers
-        .into_iter()
-        .map(|(id, answer)| (id, answer.noul))
-        .collect();
-    Some((answers, tokens))
-}
-
-fn score(case: &Case, answers: Option<&Answers>, band: Band) -> Outcome {
-    let Some(answers) = answers else {
-        return Outcome::Unrecorded;
-    };
-    let has_measurement = case.body.as_deref().is_some_and(message::has_measurement);
-    match intent::decide(answers, has_measurement, band) {
-        Ok(intent) => Outcome::Decided {
-            kind: intent.kind,
-            read: intent.read,
-        },
-        Err(refusal) => Outcome::Refused {
-            predicate: refusal.predicate,
-        },
-    }
-}
-
-/// Coverage and accuracy for one band, used by the sweep.
-fn tally(cases: &[Case], answers: &BTreeMap<String, Answers>, band: Band) -> (usize, usize, usize) {
-    let mut correct = 0;
-    let mut answered = 0;
-    for case in cases {
-        if let Outcome::Decided { kind, .. } = score(case, answers.get(&case.name), band) {
-            answered += 1;
-            if kind == case.expected {
-                correct += 1;
-            }
-        }
-    }
-    (correct, answered, cases.len())
-}
-
-fn read_baseline() -> BTreeMap<String, String> {
-    std::fs::read_to_string(BASELINE)
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| {
-            let (name, label) = line.split_once(" = ")?;
-            Some((
-                name.trim().to_string(),
-                label.trim().trim_matches('"').to_string(),
-            ))
-        })
-        .collect()
-}
+use cmt::message::CommitType;
 
 fn main() {
     let live = std::env::args().any(|a| a == "--live");
     let bless = std::env::args().any(|a| a == "--bless");
 
-    let cases = match Case::load_dir(Path::new(CASES)) {
+    let cases = match Case::load_dir(Path::new(eval::CASES)) {
         Ok(cases) => cases,
         Err(e) => {
             eprintln!("{e}");
@@ -122,7 +29,10 @@ fn main() {
         }
     };
     if cases.is_empty() {
-        eprintln!("no cases in {CASES}; run `just harvest` and label the output");
+        eprintln!(
+            "no cases in {}; run `just harvest` and label the output",
+            eval::CASES
+        );
         std::process::exit(1);
     }
 
@@ -134,8 +44,8 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        if let Err(e) = std::fs::create_dir_all(RECORDINGS) {
-            eprintln!("{RECORDINGS}: {e}");
+        if let Err(e) = std::fs::create_dir_all(eval::RECORDINGS) {
+            eprintln!("{}: {e}", eval::RECORDINGS);
             std::process::exit(1);
         }
         for case in &cases {
@@ -155,7 +65,7 @@ fn main() {
                 }
             };
             match jev::Transport::post(&transport, &request) {
-                Ok(raw) => match std::fs::write(recording_path(&case.name), &raw) {
+                Ok(raw) => match std::fs::write(eval::recording_path(&case.name), &raw) {
                     Ok(()) => println!("recorded {}", case.name),
                     Err(e) => eprintln!("{}: write recording: {e}", case.name),
                 },
@@ -168,7 +78,7 @@ fn main() {
     let answers: BTreeMap<String, Answers> = cases
         .iter()
         .filter_map(|c| {
-            let (answers, tokens) = recording(&c.name)?;
+            let (answers, tokens) = eval::recording(&c.name)?;
             token_counts.push(tokens);
             Some((c.name.clone(), answers))
         })
@@ -186,7 +96,7 @@ fn main() {
         if case.expected == CommitType::Refactor {
             baseline_correct += 1;
         }
-        let outcome = score(case, answers.get(&case.name), intent::DEFAULT_BAND);
+        let outcome = eval::score(case, answers.get(&case.name), intent::DEFAULT_BAND);
         current.insert(case.name.clone(), outcome.label());
         match &outcome {
             Outcome::Decided { kind, .. } if *kind == case.expected => correct += 1,
@@ -264,7 +174,7 @@ fn main() {
         (0.35, 0.65),
         (0.40, 0.60),
     ] {
-        let (c, a, t) = tally(&cases, &answers, Band { low, high });
+        let (c, a, t) = eval::tally(&cases, &answers, Band { low, high });
         println!(
             "  {:<14}{:>10.3}{:>11.3}",
             format!("{low:.2}-{high:.2}"),
@@ -278,15 +188,15 @@ fn main() {
             .iter()
             .map(|(name, label)| format!("{name} = \"{label}\"\n"))
             .collect();
-        if let Err(e) = std::fs::write(BASELINE, rendered) {
-            eprintln!("{BASELINE}: {e}");
+        if let Err(e) = std::fs::write(eval::BASELINE, rendered) {
+            eprintln!("{}: {e}", eval::BASELINE);
             std::process::exit(1);
         }
         println!("\nbaseline rewritten with {} entries", current.len());
         return;
     }
 
-    if answers.is_empty() && !Path::new(BASELINE).exists() {
+    if answers.is_empty() && !Path::new(eval::BASELINE).exists() {
         println!(
             "\n0 of {total} cases recorded; the jev row is unmeasured. Run `just eval-live` \
              with TYPESAFE_API_KEY set, then `just eval-bless`."
@@ -294,21 +204,21 @@ fn main() {
         return;
     }
 
-    let expected = read_baseline();
+    let expected = eval::read_baseline();
     if expected.is_empty() {
-        eprintln!("\nno baseline at {BASELINE}; run `just eval-bless` once the report looks right");
+        eprintln!(
+            "\nno baseline at {}; run `just eval-bless` once the report looks right",
+            eval::BASELINE
+        );
         std::process::exit(1);
     }
-    let drift: Vec<_> = current
-        .iter()
-        .filter(|(name, label)| expected.get(*name) != Some(*label))
-        .collect();
+    let drift = eval::drift(&current, &expected);
     if drift.is_empty() {
         println!("\nbaseline matches");
         return;
     }
     eprintln!("\nbaseline drift:");
-    for (name, label) in drift {
+    for (name, label) in &drift {
         eprintln!(
             "  {name}: baseline {:?}, now {label:?}",
             expected.get(name).map(String::as_str).unwrap_or("(absent)")
