@@ -44,10 +44,18 @@ fn recording_path(name: &str) -> String {
 }
 
 /// The recorded answers for a case, plus the token count it cost, if a
-/// recording exists.
+/// recording exists. A missing file is silently `None` (never ran
+/// `eval-live`); a present-but-unparseable file logs distinctly, so the
+/// report can tell the two apart.
 fn recording(name: &str) -> Option<(Answers, u64)> {
     let raw = std::fs::read_to_string(recording_path(name)).ok()?;
-    let response: jev::Response = serde_json::from_str(&raw).ok()?;
+    let response: jev::Response = match serde_json::from_str(&raw) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("{name}: corrupt recording: {e}");
+            return None;
+        }
+    };
     let tokens = response.usage.input_tokens;
     let answers = response
         .answers
