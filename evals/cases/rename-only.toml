@@ -2,4 +2,4 @@ expected = "refactor"
 rationale = "Renames a private helper. No caller outside the module can tell."
 body = ""
 files = ["src/scope.rs"]
-diff = "@@ -12,7 +12,7 @@\n-fn shared_prefix(paths: &[&str]) -> Option<String> {\n+fn common_prefix(paths: &[&str]) -> Option<String> {\n"
+diff = "diff --git a/src/scope.rs b/src/scope.rs\nindex 0000000..0000000 100644\n--- a/src/scope.rs\n+++ b/src/scope.rs\n@@ -12,7 +12,7 @@\n-fn shared_prefix(paths: &[&str]) -> Option<String> {\n+fn common_prefix(paths: &[&str]) -> Option<String> {\n"
