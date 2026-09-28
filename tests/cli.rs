@@ -335,6 +335,9 @@ fn serve_once(response: String) -> (u16, thread::JoinHandle<String>) {
     let port = listener.local_addr().expect("addr").port();
     let handle = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
         let mut reader = BufReader::new(stream.try_clone().expect("clone"));
         let mut content_length = 0usize;
         loop {
