@@ -14,3 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the agent-commits precedence cascade to pick `security`, `fix`,
   `feat`, `perf`, or `refactor`. Opt-in; requires `TYPESAFE_API_KEY`.
 - Exit code `4`, meaning `--jev` could not decide.
+
+### Changed
+
+- Broadened mise config path classification to cover grouped configs
+  (`mise/config.toml`, `.config/mise/config.toml`, ...) and `conf.d`
+  fragments (`mise/conf.d/*.toml`, `<folder>/mise.toml` inside one). Paths
+  matching these forms now classify as `build` instead of `source`.
