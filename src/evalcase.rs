@@ -16,26 +16,40 @@ pub struct Case {
     pub diff: String,
 }
 
-/// Reads `key = "value"` and `key = ["a", "b"]` lines. Values are JSON
-/// strings, so escapes and embedded newlines round-trip through `serde_json`.
-fn field(raw: &str, key: &str) -> Option<String> {
-    raw.lines()
+/// Reads `key = "value"`. `Ok(None)` when the key is absent; `Err` when the
+/// key is present but its value fails to parse as a JSON string — a
+/// spacing or quoting mistake that would otherwise silently produce an
+/// empty string.
+fn field(raw: &str, key: &str) -> Result<Option<String>, String> {
+    let Some(value) = raw
+        .lines()
         .find_map(|line| line.trim().strip_prefix(&format!("{key} = ")))
         .map(str::trim)
-        .and_then(|value| serde_json::from_str::<String>(value).ok())
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str::<String>(value)
+        .map(Some)
+        .map_err(|e| format!("`{key}` is not a valid JSON string ({value:?}): {e}"))
 }
 
-fn list(raw: &str, key: &str) -> Vec<String> {
-    raw.lines()
+/// As `field`, for a `key = ["a", "b"]` line; absent is `Ok(Vec::new())`.
+fn list(raw: &str, key: &str) -> Result<Vec<String>, String> {
+    let Some(value) = raw
+        .lines()
         .find_map(|line| line.trim().strip_prefix(&format!("{key} = ")))
         .map(str::trim)
-        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
-        .unwrap_or_default()
+    else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str::<Vec<String>>(value)
+        .map_err(|e| format!("`{key}` is not a valid JSON array ({value:?}): {e}"))
 }
 
 impl Case {
     pub fn parse(name: &str, raw: &str) -> Result<Self, String> {
-        let expected = field(raw, "expected").unwrap_or_default();
+        let wrap = |e: String| format!("case `{name}`: {e}");
+        let expected = field(raw, "expected").map_err(wrap)?.unwrap_or_default();
         if expected.is_empty() {
             return Err(format!(
                 "case `{name}` is unlabelled: set `expected` to a commit type before scoring it"
@@ -44,10 +58,10 @@ impl Case {
         Ok(Self {
             name: name.to_string(),
             expected: CommitType::from_str(&expected)?,
-            rationale: field(raw, "rationale").unwrap_or_default(),
-            body: field(raw, "body").filter(|b| !b.is_empty()),
-            files: list(raw, "files"),
-            diff: field(raw, "diff").unwrap_or_default(),
+            rationale: field(raw, "rationale").map_err(wrap)?.unwrap_or_default(),
+            body: field(raw, "body").map_err(wrap)?.filter(|b| !b.is_empty()),
+            files: list(raw, "files").map_err(wrap)?,
+            diff: field(raw, "diff").map_err(wrap)?.unwrap_or_default(),
         })
     }
 
@@ -107,6 +121,20 @@ diff = "@@ -1 +1 @@\n+flag\n"
         assert_eq!(case.expected, CommitType::Feat);
         assert_eq!(case.files, vec!["src/main.rs"]);
         assert!(case.body.is_some());
+    }
+
+    #[test]
+    fn a_malformed_files_array_fails_loudly_instead_of_defaulting() {
+        let raw = r#"
+expected = "feat"
+rationale = "r"
+body = ""
+files = ['src/main.rs']
+diff = "@@\n"
+"#;
+        let err = Case::parse("bad-quotes", raw).expect_err("should reject");
+
+        assert!(err.contains("files"), "unexpected error: {err}");
     }
 
     #[test]
