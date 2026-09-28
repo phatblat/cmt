@@ -196,6 +196,27 @@ fn is_mise_grouped_config(path: &str) -> bool {
             .any(|d| parent_dir_ends_with(path, d))
 }
 
+/// The three directories a `conf.d` fragment tree can be rooted at.
+/// https://mise.jdx.dev/configuration.html#conf-d-folders
+const CONF_D_ROOTS: [&[&str]; 3] = [
+    &["mise", "conf.d"],
+    &[".mise", "conf.d"],
+    &[".config", "mise", "conf.d"],
+];
+
+/// Whether `path` sits anywhere inside a `conf.d` directory tree, regardless
+/// of whether the basename itself is a valid fragment there. Used to keep
+/// the depth-independent `is_mise_toml` check — meant for a real project
+/// config found by mise's upward directory walk — from also matching a
+/// dotfile-spelled name that is only ever read here under `conf.d`'s
+/// stricter, non-dotfile rule.
+fn under_conf_d(path: &str) -> bool {
+    let dir_components: Vec<&str> = dirs(path).collect();
+    CONF_D_ROOTS
+        .iter()
+        .any(|root| dir_components.windows(root.len()).any(|w| w == *root))
+}
+
 /// Whether `path` is a `.toml` fragment inside a mise `conf.d` directory: any
 /// non-hidden `.toml` file directly inside it, or `<folder>/mise.toml` /
 /// `<folder>/mise.development.toml` / etc. inside a folder fragment — folders
@@ -203,12 +224,8 @@ fn is_mise_grouped_config(path: &str) -> bool {
 /// https://mise.jdx.dev/configuration.html#conf-d-folders
 fn is_mise_conf_d(path: &str) -> bool {
     let dir_components: Vec<&str> = dirs(path).collect();
-    const ROOTS: [&[&str]; 3] = [
-        &["mise", "conf.d"],
-        &[".mise", "conf.d"],
-        &[".config", "mise", "conf.d"],
-    ];
-    ROOTS.iter().any(|root| {
+    let base = basename(path);
+    CONF_D_ROOTS.iter().any(|root| {
         dir_components
             .windows(root.len())
             .enumerate()
@@ -217,8 +234,8 @@ fn is_mise_conf_d(path: &str) -> bool {
                     return false;
                 }
                 match dir_components.len() - (i + root.len()) {
-                    0 => extension(basename(path)) == "toml",
-                    1 => is_mise_toml(basename(path)),
+                    0 => !base.starts_with('.') && extension(base) == "toml",
+                    1 => base.starts_with("mise.") && base.ends_with(".toml"),
                     _ => false,
                 }
             })
@@ -400,7 +417,7 @@ pub fn category(change: &Change) -> Category {
         || BUILD_PREFIXES.iter().any(|p| base.starts_with(p))
         || ext == "dockerfile"
         || dirs(path).any(|d| BUILD_DIRS.contains(&d))
-        || is_mise_toml(base)
+        || (is_mise_toml(base) && !under_conf_d(path))
         || is_mise_grouped_config(path)
         || is_mise_conf_d(path)
     {
@@ -801,6 +818,11 @@ mod tests {
             (".config/mise/conf.d/README.md", Category::Docs),
             // A `config.toml` under an unrelated tool's dotdir is not mise's.
             (".config/helix/config.toml", Category::Source),
+            // Hidden top-level conf.d fragments are skipped by mise.
+            (".config/mise/conf.d/.env.toml", Category::Source),
+            // The dotfile `.mise.*.toml` spelling is only valid at project
+            // root, not inside a conf.d folder fragment.
+            (".config/mise/conf.d/git-tools/.mise.toml", Category::Source),
         ];
         for (path, expected) in non_build_cases {
             assert_eq!(category(&modified(path)), expected, "{path}");
