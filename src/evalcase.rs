@@ -55,7 +55,9 @@ impl Case {
     pub fn load_dir(dir: &std::path::Path) -> Result<Vec<Self>, String> {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
-            .filter_map(Result::ok)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .into_iter()
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "toml"))
             .collect();
