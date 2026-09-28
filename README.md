@@ -83,7 +83,7 @@ mise config paths are recognised at any depth, following
 `mise.toml`, `.mise.toml`, either `.local`, or an environment variant like
 `mise.development.toml`; the grouped forms `mise/config.toml`, `.mise/config.toml`,
 `.config/mise.toml`, and `.config/mise/config.toml` (with their own `.local` and
-environment variants); the `.config/mise/mise.toml` / `mise.local.toml` legacy
+environment variants); the `.config/mise/mise.toml` / `.config/mise/mise.local.toml` legacy
 aliases; and `conf.d` fragments — any `.toml` directly inside `mise/conf.d/`,
 `.mise/conf.d/`, or `.config/mise/conf.d/`, or a `<folder>/mise.toml` inside one
 (folders are not searched recursively).
