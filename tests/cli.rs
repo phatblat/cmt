@@ -163,6 +163,24 @@ fn source_and_docs_become_two_commits() {
 }
 
 #[test]
+fn mise_config_and_source_become_two_ordered_commits() {
+    let repo = Repo::seeded();
+    repo.write("mise.toml", "[tools]\nrust = \"1.80\"\n");
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 1 }\n");
+    let out = repo.cmt(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "build: add mise.toml\n\nrefactor: update src/lib.rs\n"
+    );
+    assert_eq!(
+        repo.subjects(),
+        "seed\nbuild: add mise.toml\nrefactor: update src/lib.rs\n"
+    );
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
 fn deps_group_needs_bumps_and_nothing_is_committed_without_it() {
     let repo = Repo::seeded();
     let before = repo.head();
