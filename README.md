@@ -36,8 +36,9 @@ Provenance — applied to every commit:
                          --also, --breaking, --single, --agent-prompt
 
   --agent-prompt         print a drafted-commit prompt for an agent to answer;
-                         commits nothing. Conflicts with --type, --also,
-                         --breaking, --single, --jev
+                         commits nothing. Conflicts with --type, --scope,
+                         --subject, --body, --breaking, --also, --reverts,
+                         --advisory, --single, --dry-run, --jev
 
   -h, --help             print help
   -V, --version          print version
