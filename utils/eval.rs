@@ -126,23 +126,31 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        std::fs::create_dir_all(RECORDINGS).expect("create evals/recordings");
+        if let Err(e) = std::fs::create_dir_all(RECORDINGS) {
+            eprintln!("{RECORDINGS}: {e}");
+            std::process::exit(1);
+        }
         for case in &cases {
             let state = jev::State {
                 files: case.files.clone(),
                 diff: case.diff.clone(),
             };
-            let request = serde_json::to_string(&jev::Request {
+            let request = match serde_json::to_string(&jev::Request {
                 state: &state,
                 model: jev::MODEL,
                 questions: intent::questions(case.has_tests()),
-            })
-            .expect("serialize");
-            match jev::Transport::post(&transport, &request) {
-                Ok(raw) => {
-                    std::fs::write(recording_path(&case.name), &raw).expect("write recording");
-                    println!("recorded {}", case.name);
+            }) {
+                Ok(request) => request,
+                Err(e) => {
+                    eprintln!("{}: serialize: {e}", case.name);
+                    continue;
                 }
+            };
+            match jev::Transport::post(&transport, &request) {
+                Ok(raw) => match std::fs::write(recording_path(&case.name), &raw) {
+                    Ok(()) => println!("recorded {}", case.name),
+                    Err(e) => eprintln!("{}: write recording: {e}", case.name),
+                },
                 Err(e) => eprintln!("{}: {e}", case.name),
             }
         }
@@ -262,7 +270,10 @@ fn main() {
             .iter()
             .map(|(name, label)| format!("{name} = \"{label}\"\n"))
             .collect();
-        std::fs::write(BASELINE, rendered).expect("write baseline");
+        if let Err(e) = std::fs::write(BASELINE, rendered) {
+            eprintln!("{BASELINE}: {e}");
+            std::process::exit(1);
+        }
         println!("\nbaseline rewritten with {} entries", current.len());
         return;
     }
