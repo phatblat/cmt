@@ -92,7 +92,10 @@ fn main() {
         }
     };
 
-    std::fs::create_dir_all("evals/cases").expect("create evals/cases");
+    if let Err(e) = std::fs::create_dir_all("evals/cases") {
+        eprintln!("evals/cases: {e}");
+        std::process::exit(1);
+    }
     let mut written = 0usize;
     for sha in log.lines() {
         let Ok(changes) = changes(&repo, sha) else {
@@ -129,7 +132,10 @@ fn main() {
             serde_json::to_string(&files).expect("files serialize"),
             json(&diff),
         );
-        std::fs::write(&path, body).expect("write case");
+        if let Err(e) = std::fs::write(&path, body) {
+            eprintln!("{path}: {e}");
+            continue;
+        }
         written += 1;
     }
     println!("wrote {written} unlabelled candidates to evals/cases/");
