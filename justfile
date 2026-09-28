@@ -120,4 +120,4 @@ eval-bless:
 # Propose unlabelled fixture candidates from a repository's history
 [group('eval')]
 harvest repo="." count="20":
-    cargo run --quiet --example harvest -- {{ repo }} {{ count }}
+    cargo run --quiet --example harvest -- "{{ repo }}" "{{ count }}"
