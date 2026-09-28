@@ -111,8 +111,9 @@ Subjects are mechanical: `add|update|remove|rename <path>` for one file,
 
 `feat`, `fix`, `perf`, and `security` describe intent, which a path scan cannot
 read. `--jev` sends the source group's diff to
-[jev](https://docs.typesafe.ai/) as seven yes/no questions in one request, then
-resolves the answers through a fixed cascade in `src/intent.rs`:
+[jev](https://docs.typesafe.ai/) as up to seven yes/no questions in one
+request (six when the source group has no test file), then resolves the
+answers through a fixed cascade in `src/intent.rs`:
 
 | Order | Predicate                                             | Type            |
 | ----- | ----------------------------------------------------- | --------------- |
