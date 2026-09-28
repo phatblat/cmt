@@ -371,6 +371,22 @@ fn feat_answers(observable_delta: f64) -> String {
     )
 }
 
+/// A jev response naming each of the six requested (non-test) predicates at
+/// the given confidence, so the full cascade — not just the feat path — is
+/// reachable end to end through the real CLI.
+fn cascade_answers(
+    named_vulnerability: f64,
+    observable_delta: f64,
+    contradicted_stated_contract: f64,
+    adds_capability: f64,
+    measured_resource_change: f64,
+    consumer_must_change: f64,
+) -> String {
+    format!(
+        r#"{{"model":"jev-1.13.0","answers":{{"named_vulnerability":{{"type":"noul","noul":{named_vulnerability}}},"observable_delta":{{"type":"noul","noul":{observable_delta}}},"adds_capability":{{"type":"noul","noul":{adds_capability}}},"contradicted_stated_contract":{{"type":"noul","noul":{contradicted_stated_contract}}},"measured_resource_change":{{"type":"noul","noul":{measured_resource_change}}},"consumer_must_change":{{"type":"noul","noul":{consumer_must_change}}}}},"usage":{{"input_tokens":1200,"output_tokens":20}}}}"#
+    )
+}
+
 fn http_ok(body: &str) -> String {
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -471,4 +487,106 @@ fn jev_refuses_an_ambiguous_answer() {
     assert_eq!(out.status.code(), Some(4));
     assert!(stderr(&out).contains("jev was unsure"), "{}", stderr(&out));
     assert_eq!(repo.head(), before, "a refusal must leave HEAD unmoved");
+}
+
+#[test]
+fn jev_decides_fix_for_a_broken_promise() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.01, 0.9, 0.9, 0.01, 0.02, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nfix: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_decides_refactor_when_every_predicate_is_quiet() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(
+        0.01, 0.02, 0.02, 0.02, 0.02, 0.02,
+    )));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nrefactor: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_decides_perf_with_a_measurement_in_the_body() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.01, 0.02, 0.02, 0.02, 0.9, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev", "--body", "before 10ms after 4ms"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nperf: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_decides_security_and_still_requires_advisory() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.9, 0.9, 0.02, 0.02, 0.02, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("security` requires --advisory"),
+        "{}",
+        stderr(&out)
+    );
+
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.9, 0.9, 0.02, 0.02, 0.02, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+    let out = repo.cmt_env(
+        &["--jev", "--advisory", "GHSA-xxxx-xxxx-xxxx"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nsecurity: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_appends_the_breaking_marker_from_consumer_must_change() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.01, 0.9, 0.02, 0.9, 0.02, 0.9)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nfeat!: update src/lib.rs\n");
 }
