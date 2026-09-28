@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use crate::change::{Change, Status};
-use crate::classify::{self, Category};
+use crate::intent;
 use crate::message::CommitType;
 
 /// One hand-labelled fixture: a diff, the type a human says it deserves, and
@@ -74,14 +74,17 @@ impl Case {
     }
 
     /// Whether the fixture's files include a test path, by the same rule
-    /// `classify::category` applies to a real change set.
+    /// `intent::has_tests` applies to a real change set.
     pub fn has_tests(&self) -> bool {
-        self.files.iter().any(|f| {
-            classify::category(&Change {
+        let changes: Vec<Change> = self
+            .files
+            .iter()
+            .map(|f| Change {
                 path: f.clone(),
                 status: Status::Modified,
-            }) == Category::Test
-        })
+            })
+            .collect();
+        intent::has_tests(&changes)
     }
 }
 
