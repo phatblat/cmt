@@ -4,6 +4,7 @@ pub mod classify;
 pub mod eval;
 pub mod evalcase;
 pub mod git;
+pub mod harvest;
 pub mod intent;
 pub mod jev;
 pub mod message;

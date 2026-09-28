@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use cmt::change::{Change, Status};
+use cmt::change::Change;
 use cmt::classify;
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
@@ -32,34 +32,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
 /// `git show --name-status` output into `Change` values.
 fn changes(repo: &Path, sha: &str) -> Result<Vec<Change>, String> {
     let raw = git(repo, &["show", "--name-status", "--format=", "-M", sha])?;
-    let mut changes = Vec::new();
-    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
-        let mut fields = line.split('\t');
-        let code = fields.next().unwrap_or_default();
-        let first = fields.next().unwrap_or_default().to_string();
-        let second = fields.next().map(str::to_string);
-        let change = match (code.chars().next(), second) {
-            (Some('A'), _) => Change {
-                path: first,
-                status: Status::Added,
-            },
-            (Some('D'), _) => Change {
-                path: first,
-                status: Status::Deleted,
-            },
-            (Some('R'), Some(to)) => Change {
-                path: to,
-                status: Status::Renamed { from: first },
-            },
-            _ => Change {
-                path: first,
-                status: Status::Modified,
-            },
-        };
-        changes.push(change);
-    }
-    changes.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(changes)
+    Ok(cmt::harvest::parse_name_status(&raw))
 }
 
 fn json(value: &str) -> String {
