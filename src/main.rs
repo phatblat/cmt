@@ -97,6 +97,9 @@ struct Cli {
     /// ask jev to decide the source commit's intent; needs TYPESAFE_API_KEY
     #[arg(
         long,
+        // `also` conflicts even though the jev overlay never touches
+        // `message.also`: `--also` names the type that lost a manual
+        // tiebreak, which has no meaning once jev is the one deciding.
         conflicts_with_all = ["kind", "also", "breaking", "single", "agent_prompt"]
     )]
     jev: bool,
