@@ -1,6 +1,9 @@
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::thread;
 
 use tempfile::TempDir;
 
@@ -64,6 +67,19 @@ impl Repo {
             .args(args)
             .output()
             .expect("run cmt")
+    }
+
+    /// Runs `cmt` with `TYPESAFE_API_KEY`/`TYPESAFE_ENDPOINT` cleared, then
+    /// `env` applied on top, so `--jev` tests never depend on the ambient
+    /// environment.
+    fn cmt_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut cmd = self.command(env!("CARGO_BIN_EXE_cmt"));
+        cmd.env_remove("TYPESAFE_API_KEY");
+        cmd.env_remove("TYPESAFE_ENDPOINT");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd.args(args).output().expect("run cmt")
     }
 
     fn subjects(&self) -> String {
@@ -142,6 +158,24 @@ fn source_and_docs_become_two_commits() {
     assert_eq!(
         repo.subjects(),
         "seed\nrefactor: update src/lib.rs\ndocs: update README.md\n"
+    );
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn mise_config_and_source_become_two_ordered_commits() {
+    let repo = Repo::seeded();
+    repo.write("mise.toml", "[tools]\nrust = \"1.80\"\n");
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 1 }\n");
+    let out = repo.cmt(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "build: add mise.toml\n\nrefactor: update src/lib.rs\n"
+    );
+    assert_eq!(
+        repo.subjects(),
+        "seed\nbuild: add mise.toml\nrefactor: update src/lib.rs\n"
     );
     assert_eq!(repo.status(), "");
 }
@@ -310,4 +344,267 @@ fn agent_prompt_conflicts_with_intent_flags() {
         "{}",
         stderr(&out)
     );
+}
+
+/// Accepts one connection, replies with `response`, and returns the request
+/// body it received (read via `Content-Length`).
+fn serve_once(response: String) -> (u16, thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read line");
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(len) = line
+                .to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(str::trim)
+            {
+                content_length = len.parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).expect("read body");
+        let mut stream = stream;
+        stream.write_all(response.as_bytes()).expect("write");
+        String::from_utf8_lossy(&body).into_owned()
+    });
+    (port, handle)
+}
+
+/// A jev response naming `observable_delta` and `adds_capability`, so the
+/// cascade resolves to `feat`, with every other predicate quiet.
+fn feat_answers(observable_delta: f64) -> String {
+    format!(
+        r#"{{"model":"jev-1.13.0","answers":{{"named_vulnerability":{{"type":"noul","noul":0.01}},"observable_delta":{{"type":"noul","noul":{observable_delta}}},"adds_capability":{{"type":"noul","noul":0.94}},"contradicted_stated_contract":{{"type":"noul","noul":0.03}},"measured_resource_change":{{"type":"noul","noul":0.02}},"consumer_must_change":{{"type":"noul","noul":0.02}}}},"usage":{{"input_tokens":1200,"output_tokens":20}}}}"#
+    )
+}
+
+/// A jev response naming each of the six requested (non-test) predicates at
+/// the given confidence, so the full cascade — not just the feat path — is
+/// reachable end to end through the real CLI.
+fn cascade_answers(
+    named_vulnerability: f64,
+    observable_delta: f64,
+    contradicted_stated_contract: f64,
+    adds_capability: f64,
+    measured_resource_change: f64,
+    consumer_must_change: f64,
+) -> String {
+    format!(
+        r#"{{"model":"jev-1.13.0","answers":{{"named_vulnerability":{{"type":"noul","noul":{named_vulnerability}}},"observable_delta":{{"type":"noul","noul":{observable_delta}}},"adds_capability":{{"type":"noul","noul":{adds_capability}}},"contradicted_stated_contract":{{"type":"noul","noul":{contradicted_stated_contract}}},"measured_resource_change":{{"type":"noul","noul":{measured_resource_change}}},"consumer_must_change":{{"type":"noul","noul":{consumer_must_change}}}}},"usage":{{"input_tokens":1200,"output_tokens":20}}}}"#
+    )
+}
+
+fn http_ok(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+#[test]
+fn jev_without_a_key_exits_four() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() {}\npub fn g() {}\n");
+
+    let out = repo.cmt_env(&["--jev"], &[]);
+
+    assert_eq!(out.status.code(), Some(4));
+    assert!(
+        stderr(&out).contains("TYPESAFE_API_KEY"),
+        "stderr should name the missing variable: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn jev_conflicts_with_type() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() {}\npub fn g() {}\n");
+
+    let out = repo.cmt(&["--jev", "--type", "feat"]);
+
+    assert_ne!(out.status.code(), Some(0));
+    assert!(
+        stderr(&out).contains("cannot be used with"),
+        "clap should reject the combination: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn jev_without_a_source_group_exits_four() {
+    let repo = Repo::seeded();
+    repo.write("README.md", "# seed\n\nmore\n");
+
+    let out = repo.cmt(&["--jev"]);
+
+    assert_eq!(out.status.code(), Some(4));
+    assert!(
+        stderr(&out).contains("no source"),
+        "stderr should say why there is nothing to ask about: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn jev_decides_the_source_commit() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&feat_answers(0.96)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    let request_body = handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nfeat: update src/lib.rs\n");
+    assert!(
+        request_body.contains(r#""model":"jev-1.13.0""#),
+        "{request_body}"
+    );
+    assert!(request_body.contains("observable_delta"), "{request_body}");
+    assert!(
+        request_body.contains(r#""files":["src/lib.rs"]"#),
+        "{request_body}"
+    );
+    assert!(
+        !request_body.contains("test_expectation_changed"),
+        "no test file staged, so Rule F's predicate must be omitted: {request_body}"
+    );
+}
+
+#[test]
+fn jev_refuses_an_ambiguous_answer() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let before = repo.head();
+    let (port, handle) = serve_once(http_ok(&feat_answers(0.5)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(4));
+    assert!(stderr(&out).contains("jev was unsure"), "{}", stderr(&out));
+    assert_eq!(repo.head(), before, "a refusal must leave HEAD unmoved");
+}
+
+#[test]
+fn jev_decides_fix_for_a_broken_promise() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.01, 0.9, 0.9, 0.01, 0.02, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nfix: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_decides_refactor_when_every_predicate_is_quiet() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(
+        0.01, 0.02, 0.02, 0.02, 0.02, 0.02,
+    )));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nrefactor: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_decides_perf_with_a_measurement_in_the_body() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.01, 0.02, 0.02, 0.02, 0.9, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev", "--body", "before 10ms after 4ms"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nperf: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_decides_security_and_still_requires_advisory() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.9, 0.9, 0.02, 0.02, 0.02, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("security` requires --advisory"),
+        "{}",
+        stderr(&out)
+    );
+
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.9, 0.9, 0.02, 0.02, 0.02, 0.02)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+    let out = repo.cmt_env(
+        &["--jev", "--advisory", "GHSA-xxxx-xxxx-xxxx"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nsecurity: update src/lib.rs\n");
+}
+
+#[test]
+fn jev_appends_the_breaking_marker_from_consumer_must_change() {
+    let repo = Repo::seeded();
+    repo.write("src/lib.rs", "pub fn f() -> u8 { 2 }\n");
+    let (port, handle) = serve_once(http_ok(&cascade_answers(0.01, 0.9, 0.02, 0.9, 0.02, 0.9)));
+    let url = format!("http://127.0.0.1:{port}/v1/systemone");
+
+    let out = repo.cmt_env(
+        &["--jev"],
+        &[("TYPESAFE_API_KEY", "test"), ("TYPESAFE_ENDPOINT", &url)],
+    );
+    handle.join().expect("server thread");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.subjects(), "seed\nfeat!: update src/lib.rs\n");
 }

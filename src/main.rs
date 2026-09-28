@@ -1,17 +1,14 @@
-mod bumps;
-mod change;
-mod classify;
-mod git;
-mod message;
-mod prompt;
-mod scope;
-mod subject;
-
 use clap::Parser;
 
-use change::Change;
-use classify::Group;
-use message::{CommitType, Message};
+use cmt::change::Change;
+use cmt::classify::{self, Group};
+use cmt::git;
+use cmt::intent::{self, Intent};
+use cmt::jev;
+use cmt::message::{self, CommitType, Message};
+use cmt::prompt;
+use cmt::scope;
+use cmt::subject;
 
 /// Commit dirty files as one agent-commits conventional commit per logical
 /// group, inferred from the paths.
@@ -97,12 +94,22 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
 
+    /// ask jev to decide the source commit's intent; needs TYPESAFE_API_KEY
+    #[arg(
+        long,
+        // `also` conflicts even though the jev overlay never touches
+        // `message.also`: `--also` names the type that lost a manual
+        // tiebreak, which has no meaning once jev is the one deciding.
+        conflicts_with_all = ["kind", "also", "breaking", "single", "agent_prompt"]
+    )]
+    jev: bool,
+
     /// print a prompt for an agent to decide intent with; stages, commits nothing
     #[arg(
         long,
         conflicts_with_all = [
             "kind", "scope", "subject", "body", "breaking", "also", "reverts", "advisory",
-            "single", "dry_run",
+            "single", "dry_run", "jev",
         ]
     )]
     agent_prompt: bool,
@@ -163,6 +170,13 @@ impl Failure {
             reason: reason.into(),
         }
     }
+
+    fn jev(reason: impl Into<String>) -> Self {
+        Self {
+            code: 4,
+            reason: reason.into(),
+        }
+    }
 }
 
 struct Planned {
@@ -192,10 +206,15 @@ fn execute(cli: &Cli) -> Result<(), Failure> {
         });
     }
     let groups = classify::group(&changes, &git::show);
+    let jev_intent = if cli.jev {
+        Some(resolve_jev(cli, &groups)?)
+    } else {
+        None
+    };
     let planned = if cli.single {
         vec![single(cli, changes, &groups)?]
     } else {
-        grouped(cli, groups)?
+        grouped(cli, groups, jev_intent)?
     };
 
     if cli.agent_prompt {
@@ -238,7 +257,41 @@ fn execute(cli: &Cli) -> Result<(), Failure> {
     Ok(())
 }
 
-fn grouped(cli: &Cli, groups: Vec<Group>) -> Result<Vec<Planned>, Failure> {
+/// Asks jev about the source group and resolves the answers into an intent.
+/// Every failure here is exit 4: no source commit, a missing key, a diff over
+/// budget, a transport failure, or an answer too close to call.
+fn resolve_jev(cli: &Cli, groups: &[Group]) -> Result<Intent, Failure> {
+    let group = groups.iter().find(|g| g.source).ok_or_else(|| {
+        Failure::jev("--jev needs a source commit; this change set has no source files")
+    })?;
+    let transport = jev::Http::from_env().map_err(Failure::jev)?;
+
+    let paths: Vec<String> = group
+        .changes
+        .iter()
+        .flat_map(Change::pathspecs)
+        .map(str::to_string)
+        .collect();
+    let diff = git::diff(&paths).map_err(Failure::git)?;
+    let state = intent::state(&group.changes, diff).map_err(Failure::jev)?;
+
+    let questions = intent::questions(intent::has_tests(&group.changes));
+    let response = jev::ask(&transport, &state, questions).map_err(Failure::jev)?;
+    let answers: intent::Answers = response
+        .answers
+        .into_iter()
+        .map(|(id, answer)| (id, answer.noul))
+        .collect();
+
+    intent::decide(
+        &answers,
+        cli.body.as_deref().is_some_and(message::has_measurement),
+        intent::DEFAULT_BAND,
+    )
+    .map_err(|refusal| Failure::jev(refusal.to_string()))
+}
+
+fn grouped(cli: &Cli, groups: Vec<Group>, jev: Option<Intent>) -> Result<Vec<Planned>, Failure> {
     if !cli.bumps.is_empty() && !groups.iter().any(|g| g.kind == CommitType::Deps) {
         return Err(Failure::invalid(
             "--bumps given but this change set has no deps group",
@@ -270,6 +323,10 @@ fn grouped(cli: &Cli, groups: Vec<Group>) -> Result<Vec<Planned>, Failure> {
             let is_primary = Some(i) == primary;
             if is_primary {
                 apply_intent(cli, &mut message);
+                if let Some(intent) = &jev {
+                    message.kind = intent.kind;
+                    message.breaking = intent.breaking;
+                }
             }
             Planned {
                 message: cli.with_provenance(message),

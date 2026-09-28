@@ -1,7 +1,8 @@
 # cmt
 
-Deterministically commits dirty files as one agent-commits conventional commit
-per logical group, inferred from the paths.
+Commits changes to git automatically.
+With `--jev`, the source commit's type is instead decided by
+TypeSafe's jev model.
 
 ## Usage
 
@@ -29,6 +30,18 @@ Provenance — applied to every commit:
   --tested-by <NAME>     Tested-by: trailer (repeatable)
 
   --dry-run              stage and print every message; commit nothing
+
+  --jev                  ask jev to decide the source commit's intent;
+                         needs TYPESAFE_API_KEY. Conflicts with --type,
+                         --also, --breaking, --single, --agent-prompt
+
+  --agent-prompt         print a drafted-commit prompt for an agent to answer;
+                         commits nothing. Conflicts with --type, --scope,
+                         --subject, --body, --breaking, --also, --reverts,
+                         --advisory, --single, --dry-run, --jev
+
+  -h, --help             print help
+  -V, --version          print version
 ```
 
 Exit codes:
@@ -37,6 +50,8 @@ Exit codes:
 - `1` — git failure; earlier groups may already be committed
 - `2` — validation failed; nothing committed
 - `3` — nothing to commit
+- `4` — `--jev` could not decide: no key, no source commit, transport failure,
+  a diff over budget, or an answer too close to call. Nothing committed.
 
 Messages follow the [agent-commits](https://github.com/phatblat/agent-commits)
 convention plus the [conventional-docs](https://github.com/phatblat/conventional-docs)
@@ -49,45 +64,84 @@ commit over the whole selection.
 
 Top-down, first match wins.
 
-| # | Category | Predicate |
-|---|---|---|
-| 1 | todo | path is `TODO.md` |
-| 2 | plan | path is `PLAN.md` and it was added or deleted |
-| 3 | decision | added `docs/decisions/YYYY-MM-DD-slug.md` |
-| 4 | ignore | basename ends with `ignore`, or is `.gitattributes` |
-| 5 | ci | under `.github/workflows/` or `.circleci/`; `.gitlab-ci.yml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile` |
-| 6 | lock | `Cargo.lock`, `package-lock.json`, `bun.lock`, `bun.lockb`, `yarn.lock`, `pnpm-lock.yaml`, `uv.lock`, `poetry.lock`, `go.sum` |
-| 7 | manifest | `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod` |
-| 8 | test | under `tests/`, `test/`, `__tests__/`, `spec/`; `*_test.*`, `*.test.*`, `*.spec.*`, `test_*.py`, `*Tests.swift` |
-| 9 | docs | under `docs/`; `.md`, `.mdx`, `.rst`, `.txt` |
-| 10 | build | `mise.toml`, `.tool-versions`, `justfile`, `Makefile`, `build.rs`, `.editorconfig`, `rustfmt.toml`, `clippy.toml`, `commitlint.config.*`, `Dockerfile*`, `*.dockerfile`, `tsconfig*`, `.prettierrc*`, `.husky/` |
-| 11 | source | anything else |
+| #   | Category | Predicate                                                                                                                                                                                                                                                                                                   |
+| --- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | todo     | path is `TODO.md`                                                                                                                                                                                                                                                                                           |
+| 2   | plan     | path is `PLAN.md` and it was added or deleted                                                                                                                                                                                                                                                               |
+| 3   | decision | added `docs/decisions/YYYY-MM-DD-slug.md`                                                                                                                                                                                                                                                                   |
+| 4   | ignore   | basename ends with `ignore`, or is `.gitattributes`                                                                                                                                                                                                                                                         |
+| 5   | ci       | under `.github/workflows/` or `.circleci/`; `.gitlab-ci.yml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`                                                                                                                                                                                           |
+| 6   | lock     | `Cargo.lock`, `package-lock.json`, `bun.lock`, `bun.lockb`, `yarn.lock`, `pnpm-lock.yaml`, `uv.lock`, `poetry.lock`, `go.sum`                                                                                                                                                                               |
+| 7   | manifest | `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`                                                                                                                                                                                                                                                    |
+| 8   | test     | under `tests/`, `test/`, `__tests__/`, `spec/`; `*_test.*`, `*.test.*`, `*.spec.*`, `test_*.py`, `*Tests.swift`                                                                                                                                                                                             |
+| 9   | docs     | under `docs/`; `.md`, `.mdx`, `.rst`, `.txt`                                                                                                                                                                                                                                                                |
+| 10  | build    | every mise config path (`mise.toml`, `mise/config.toml`, `.config/mise/conf.d/*.toml`, ... — see below), `.tool-versions`, `justfile`, `Makefile`, `build.rs`, `.editorconfig`, `rustfmt.toml`, `clippy.toml`, `commitlint.config.*`, `Dockerfile*`, `*.dockerfile`, `tsconfig*`, `.prettierrc*`, `.husky/` |
+| 11  | source   | anything else                                                                                                                                                                                                                                                                                               |
+
+mise config paths are recognised at any depth, following
+[mise's own precedence](https://mise.jdx.dev/configuration.html#mise-toml):
+`mise.toml`, `.mise.toml`, either `.local`, or an environment variant like
+`mise.development.toml`; the grouped forms `mise/config.toml`, `.mise/config.toml`,
+`.config/mise.toml`, and `.config/mise/config.toml` (with their own `.local` and
+environment variants); the `.config/mise/mise.toml` / `.config/mise/mise.local.toml` legacy
+aliases; and `conf.d` fragments — any `.toml` directly inside `mise/conf.d/`,
+`.mise/conf.d/`, or `.config/mise/conf.d/`, or a `<folder>/mise.toml` inside one
+(folders are not searched recursively).
 
 ### How groups become commits
 
 One commit per group, in this order, so the tree builds after each one.
 
-| Order | Type | Members |
-|---|---|---|
-| 1 | `decision: propose <id>` | one commit per added decision record |
-| 2 | `plan: start <id>` / `plan: done <id>` | one commit per `PLAN.md` add/delete; `<id>` is the first decision link inside it |
-| 3 | `ignore` | every ignore path |
-| 4 | `build` | every build path, plus manifests when no lockfile moved |
-| 5 | `deps` | every lockfile, plus manifests, when a lockfile moved (needs `--bumps`) |
-| 6 | `refactor[(scope)]` | every source path, plus tests when source changed; scope is the shared directory under `src/`, `crates/`, ... |
-| 7 | `test` | every test path, when no source changed |
-| 8 | `docs` | every docs path |
-| 9 | `ci` | every ci path |
-| 10 | `todo: sync` / `todo: clear` | one commit per `TODO.md` change |
+| Order | Type                                   | Members                                                                                                       |
+| ----- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 1     | `decision: propose <id>`               | one commit per added decision record                                                                          |
+| 2     | `plan: start <id>` / `plan: done <id>` | one commit per `PLAN.md` add/delete; `<id>` is the first decision link inside it                              |
+| 3     | `ignore`                               | every ignore path                                                                                             |
+| 4     | `build`                                | every build path, plus manifests when no lockfile moved                                                       |
+| 5     | `deps`                                 | every lockfile, plus manifests, when a lockfile moved (needs `--bumps`)                                       |
+| 6     | `refactor[(scope)]`                    | every source path, plus tests when source changed; scope is the shared directory under `src/`, `crates/`, ... |
+| 7     | `test`                                 | every test path, when no source changed                                                                       |
+| 8     | `docs`                                 | every docs path                                                                                               |
+| 9     | `ci`                                   | every ci path                                                                                                 |
+| 10    | `todo: sync` / `todo: clear`           | one commit per `TODO.md` change                                                                               |
 
 Subjects are mechanical: `add|update|remove|rename <path>` for one file,
 `<verb> <N> files in <dir>` for several.
 
+### How `--jev` decides
+
+`feat`, `fix`, `perf`, and `security` describe intent, which a path scan cannot
+read. `--jev` sends the source group's diff to
+[jev](https://docs.typesafe.ai/) as up to seven yes/no questions in one
+request (six when the source group has no test file), then resolves the
+answers through a fixed cascade in `src/intent.rs`:
+
+| Order | Predicate                                             | Type            |
+| ----- | ----------------------------------------------------- | --------------- |
+| 1     | `named_vulnerability`                                 | `security`      |
+| 2     | `observable_delta` and `contradicted_stated_contract` | `fix` (Rule N)  |
+| 3     | `observable_delta` and `adds_capability`              | `feat` (Rule N) |
+| 4     | `observable_delta`                                    | `fix`           |
+| 5     | `test_expectation_changed`                            | `fix` (Rule F)  |
+| 6     | `measured_resource_change` and a number in `--body`   | `perf` (Rule P) |
+| 7     | none of the above                                     | `refactor`      |
+
+`consumer_must_change` appends `!`. The model answers only the seven questions;
+the ordering, Rule P's measurement check, and every trailer requirement stay in
+code. An answer between 0.25 and 0.75 on a predicate the cascade reads is a
+refusal, not a guess. `TYPESAFE_ENDPOINT` overrides the API endpoint, for
+testing against a stub.
+
+`just eval` scores that cascade against a labelled corpus in `evals/`, offline,
+and runs as part of `just check`. `just eval-live` refreshes the recordings.
+
 ## Development
 
 ```bash
-just deps    # install pinned tools and dependencies
-just check   # formatting, lint, types, tests
+just deps     # install pinned tools and dependencies
+just check    # formatting, lint, types, tests
+just eval     # score the cascade against recorded jev responses, offline
+just harvest  # propose new fixture candidates from a repo's history
 ```
 
 `just --list` shows every recipe.
