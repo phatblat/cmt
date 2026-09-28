@@ -69,7 +69,15 @@ fn json(value: &str) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (repo, count) = match args.as_slice() {
-        [repo, count] => (Path::new(repo).to_path_buf(), count.parse().unwrap_or(20)),
+        [repo, count] => {
+            let Ok(count) = count.parse::<usize>() else {
+                eprintln!(
+                    "usage: just harvest <repo-path> <count>; count must be a number, got {count:?}"
+                );
+                std::process::exit(2);
+            };
+            (Path::new(repo).to_path_buf(), count)
+        }
         _ => {
             eprintln!("usage: just harvest <repo-path> <count>");
             std::process::exit(2);
